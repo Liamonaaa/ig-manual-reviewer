@@ -5,15 +5,20 @@ import { exportToCSV } from './utils/csv';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { UserRow, Status } from './types';
 import { Moon, Sun, Download, Trash2, Layers } from 'lucide-react';
+import initialUsersData from './initialUsers.json';
 import './index.css';
 
+const defaultUsers = initialUsersData as UserRow[];
+
 export default function App() {
-  const [users, setUsers] = useLocalStorage<UserRow[]>('ig-reviewer-users', []);
+  const [users, setUsers] = useLocalStorage<UserRow[]>('ig-reviewer-data', defaultUsers);
   const [theme, setTheme] = useLocalStorage<'light' | 'dark'>('ig-reviewer-theme', 'dark');
   
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<Status | 'all'>('all');
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [unfollowQueue, setUnfollowQueue] = useState<string[]>([]);
+  const [isProcessingQueue, setIsProcessingQueue] = useState(false);
 
   // Pagination & Batching
   const [batchSize, setBatchSize] = useState<number>(25);
@@ -89,15 +94,66 @@ export default function App() {
   }, [activeId, paginatedUsers, users]);
 
 
+  // Background sequential queue processor
+  useEffect(() => {
+    const processQueue = async () => {
+      if (unfollowQueue.length === 0 || isProcessingQueue) return;
+      
+      setIsProcessingQueue(true);
+      const id = unfollowQueue[0];
+      const u = users.find(user => user.id === id);
+      
+      if (u) {
+        try {
+          const res = await fetch('http://127.0.0.1:5000/api/unfollow', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: u.username })
+          });
+          const data = await res.json();
+          
+          if (!data.success) {
+            alert(`API Failed for ${u.username}:\n${data.error}`);
+          } else {
+            // Delete user on success
+            setUsers(curr => curr.filter(currUser => currUser.id !== id));
+          }
+        } catch(e: any) {
+          alert(`Network Error for ${u.username}:\n${e.message}`);
+        }
+      }
+      
+      setUnfollowQueue(prev => prev.slice(1));
+      setIsProcessingQueue(false);
+    };
+
+    processQueue();
+  }, [unfollowQueue, isProcessingQueue, users, setUsers]);
+
   // Actions
   const updateStatus = (id: string, status: Status) => {
-    setUsers(curr => curr.map(u => u.id === id ? { ...u, status } : u));
-    // Auto-advance if not pending
-    if (status !== 'pending' && activeId === id) {
-      const idx = paginatedUsers.findIndex(u => u.id === id);
-      if (idx !== -1 && idx < paginatedUsers.length - 1) {
-        setActiveId(paginatedUsers[idx + 1].id);
+    // Determine the next user to highlight BEFORE anything else
+    const currentIndex = paginatedUsers.findIndex(u => u.id === id);
+    if (currentIndex !== -1 && currentIndex < paginatedUsers.length - 1) {
+      setActiveId(paginatedUsers[currentIndex + 1].id);
+    }
+
+    if (status === 'unfollowed manually') {
+      if (!unfollowQueue.includes(id)) {
+        setUnfollowQueue(prev => [...prev, id]);
       }
+    } else {
+      setUsers(curr => curr.map(u => u.id === id ? { ...u, status } : u));
+    }
+  };
+
+  const autoQueueAll = () => {
+    const confirmation = window.confirm(
+      `🚨 סכנת חסימה! 🚨\n\nהכנסה של כל ה-${users.length} משתמשים במכה אחת בלי הפסקה לפעולת הבוט היא הדרך הבטוחה לחטוף חסימה או באן מאינסטגרם!\n\nהאם אתה בטוח שאתה רוצה לעשות את זה?`
+    );
+    if (confirmation) {
+      const allPendingIds = users.filter(u => !unfollowQueue.includes(u.id)).map(u => u.id);
+      setUnfollowQueue(prev => [...prev, ...allPendingIds]);
     }
   };
 
@@ -155,13 +211,19 @@ export default function App() {
               <span className="stat-label">Pending</span>
             </div>
             
-            <div className="controls">
-              <button className="action-button primary" onClick={() => bulkOpenNext(5)}>
-                <Layers size={16} /> Bulk Open Next 5 Pending
+            <div className="table-actions" style={{display: 'flex', gap: '0.5rem', marginBottom: '1rem'}}>
+              <button className="primary-button" onClick={() => bulkOpenNext(batchSize)} disabled={paginatedUsers.length === 0}>
+                <Layers size={16} /> Open Next {batchSize}
+              </button>
+              <button 
+                 className="big-x-button" 
+                 style={{padding: '0.5rem 1rem', display: 'flex', alignItems: 'center'}} 
+                 onClick={autoQueueAll} 
+                 disabled={users.length === 0 || unfollowQueue.length === users.length}>
+                Auto-Queue All
               </button>
             </div>
           </div>
-
           <div className="filters-bar">
             <input 
               type="text" 
@@ -185,7 +247,7 @@ export default function App() {
           </div>
 
           <DataTable 
-            users={paginatedUsers} 
+            users={paginatedUsers.map(u => unfollowQueue.includes(u.id) ? {...u, status: 'unfollowing...' as any} : u)} 
             activeId={activeId} 
             onSetActive={setActiveId}
             onUpdateStatus={updateStatus}

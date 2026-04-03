@@ -69,10 +69,12 @@ export const DataTable: React.FC<Props> = ({
                   <option value="skipped">Skipped</option>
                 </select>
                 <div className="quick-actions">
-                  <button onClick={(e) => { e.stopPropagation(); onUpdateStatus(u.id, 'kept'); }} title="Keep (K)"><Check size={16} /></button>
-                  <button onClick={(e) => { e.stopPropagation(); onUpdateStatus(u.id, 'unfollowed manually'); }} title="Unfollow (U)"><X size={16} /></button>
-                  <button onClick={(e) => { e.stopPropagation(); onUpdateStatus(u.id, 'skipped'); }} title="Skip (S)"><SkipForward size={16} /></button>
-                  <button onClick={(e) => { e.stopPropagation(); onUpdateStatus(u.id, 'pending'); }} title="Pending"><Clock size={16} /></button>
+                  <button 
+                    className="big-x-button delete-button" 
+                    onClick={(e) => { e.stopPropagation(); onUpdateStatus(u.id, 'unfollowed manually'); }} 
+                    title="Unfollow (U)">
+                    <X size={20} /> <span style={{fontWeight: 600, paddingLeft: '4px'}}>Unfollow</span>
+                  </button>
                 </div>
               </td>
               <td>

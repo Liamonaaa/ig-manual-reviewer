@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Download, Layers, LogIn, LogOut, Moon, RefreshCw, Sun, Trash2, UserRoundPlus } from 'lucide-react';
+import { Download, Layers, LogIn, LogOut, Moon, RefreshCw, Square, Sun, Trash2, UserRoundPlus } from 'lucide-react';
 import { CSVImporter } from './components/CSVImporter';
 import { DataTable } from './components/DataTable';
 import { useLocalStorage } from './hooks/useLocalStorage';
@@ -132,6 +132,7 @@ export default function App() {
     const percentage = total > 0 ? Math.round((processed / total) * 100) : 0;
     return { total, pending, processed, percentage };
   }, [users]);
+  const hasQueuedUsers = unfollowQueue.length > 0;
 
   const buildApiUrl = (path: string) => `${normalizedBotBaseUrl}${path}`;
 
@@ -534,6 +535,19 @@ export default function App() {
     }
   };
 
+  const stopQueue = () => {
+    if (!hasQueuedUsers) {
+      return;
+    }
+
+    setUnfollowQueue([]);
+    setSyncMessage(
+      isProcessingQueue
+        ? 'Stop requested. The current unfollow will finish, then the queue will stop.'
+        : 'Queue cleared.',
+    );
+  };
+
   const bulkOpenNext = (count: number) => {
     const nextPending = filteredUsers.filter((user) => user.status === 'pending').slice(0, count);
     nextPending.forEach((user) => {
@@ -702,6 +716,14 @@ export default function App() {
                 disabled={!canUnfollow || users.length === 0 || unfollowQueue.length === users.length}
               >
                 Auto-Queue All
+              </button>
+              <button
+                className="action-button danger"
+                onClick={stopQueue}
+                disabled={!hasQueuedUsers}
+                title={isProcessingQueue ? 'Stop after the current unfollow finishes' : 'Clear the queued unfollows'}
+              >
+                <Square size={16} /> Stop
               </button>
             </div>
           </div>

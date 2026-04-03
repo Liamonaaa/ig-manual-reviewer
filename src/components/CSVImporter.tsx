@@ -21,7 +21,7 @@ export const CSVImporter: React.FC<Props> = ({ disabled = false, onImport }) => 
       await onImport(result);
     } catch (error) {
       console.error(error);
-      alert('Failed to parse the selected file. Use a CSV or an Instagram export ZIP.');
+      alert(error instanceof Error ? error.message : 'לא הצלחתי לקרוא את הקובץ שבחרת.');
     } finally {
       setIsBusy(false);
       if (fileInputRef.current) {
@@ -73,20 +73,20 @@ export const CSVImporter: React.FC<Props> = ({ disabled = false, onImport }) => 
       <div className="import-dropzone-glow" />
       <div className="import-dropzone-content">
         <span className="eyebrow">
-          <Sparkles size={14} /> Smart import
+          <Sparkles size={14} /> ייבוא חכם
         </span>
         <div className="import-icon-shell">
           {isBusy ? <LoaderCircle size={34} className="spin" /> : <FileUp size={34} />}
         </div>
-        <h3>{isBusy ? 'Reading your file...' : 'Drop your Instagram ZIP or CSV here'}</h3>
+        <h3>{isBusy ? 'קורא את הקובץ...' : 'גרור לכאן ZIP של אינסטגרם או קובץ CSV'}</h3>
         <p>
-          Import the official Instagram export and the app will calculate who you follow that does not follow you back.
+          המערכת תזהה לבד את רשימת החשבונות שלא מחזירים עוקב ותטען אותם ישירות לעבודה.
         </p>
         <div className="import-actions-row">
           <button type="button" className="primary-button" disabled={disabled || isBusy}>
-            {isBusy ? 'Importing...' : 'Choose File'}
+            {isBusy ? 'טוען...' : 'בחירת קובץ'}
           </button>
-          <span className="import-file-meta">Supports `.zip` and `.csv`</span>
+          <span className="import-file-meta">תומך ב־`.zip` וב־`.csv`</span>
         </div>
       </div>
       <input

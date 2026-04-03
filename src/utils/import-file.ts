@@ -22,8 +22,8 @@ function buildImportResult(nonFollowers: string[], followingCount: number, follo
     users: buildUserRows(nonFollowers, 'not following back'),
     source: 'instagram-export',
     summary: {
-      label: `${nonFollowers.length} accounts do not follow you back`,
-      details: `Following: ${followingCount} | Followers: ${followerCount}`,
+      label: `${nonFollowers.length} חשבונות לא מחזירים עוקב`,
+      details: `עוקב אחריהם: ${followingCount} | מחזירים עוקב: ${followerCount}`,
     },
   };
 }
@@ -175,14 +175,14 @@ async function parseInstagramExport(file: File): Promise<ImportResult> {
   const knownEntries = zip.file(/(^|\/)(following|followers(?:_\d+)?)\.(json|html)$/i);
 
   if (knownEntries.some((entry) => entry.name.toLowerCase().endsWith('.html'))) {
-    throw new Error('Instagram export ZIP is missing following.html or followers_*.html files.');
+    throw new Error('חסרים בקובץ ה־ZIP הקבצים following.html או followers_*.html.');
   }
 
   if (knownEntries.some((entry) => entry.name.toLowerCase().endsWith('.json'))) {
-    throw new Error('Instagram export ZIP is missing following.json or followers files.');
+    throw new Error('חסרים בקובץ ה־ZIP הקבצים following.json או followers*.json.');
   }
 
-  throw new Error('Instagram export ZIP is missing supported following/followers files.');
+  throw new Error('לא מצאתי בתוך ה־ZIP קבצי followers/following בפורמט נתמך.');
 }
 
 async function parseCsvImport(file: File): Promise<ImportResult> {
@@ -191,8 +191,8 @@ async function parseCsvImport(file: File): Promise<ImportResult> {
     users,
     source: 'csv',
     summary: {
-      label: `${users.length} accounts imported from CSV`,
-      details: 'Ready for manual review and unfollow actions.',
+      label: `${users.length} חשבונות נטענו מקובץ CSV`,
+      details: 'מוכן לעבודה ידנית מול הבוט.',
     },
   };
 }
@@ -208,5 +208,5 @@ export async function parseImportFile(file: File): Promise<ImportResult> {
     return parseCsvImport(file);
   }
 
-  throw new Error('Unsupported file type. Use a CSV or an Instagram export ZIP.');
+  throw new Error('הקובץ לא נתמך. צריך להעלות קובץ CSV או ZIP של אינסטגרם.');
 }

@@ -1,34 +1,52 @@
 import React from 'react';
-import { Check, Copy, ExternalLink, LoaderCircle, Pause, RotateCcw, X } from 'lucide-react';
-import { Status, UserRow } from '../types';
+import { Copy, ExternalLink, LoaderCircle, RefreshCcw, X } from 'lucide-react';
+import { UserRow } from '../types';
 
 interface Props {
+  title: string;
+  subtitle: string;
+  kind: 'pending' | 'failed';
   users: UserRow[];
   activeId: string | null;
-  canUnfollow: boolean;
-  isQueueProcessing: boolean;
+  canAct: boolean;
+  busyUserId: string | null;
   currentProcessingUsername: string | null;
-  onManualUnfollow: (id: string) => void;
-  onUpdateStatus: (id: string, status: Status) => void;
-  onUpdateNote: (id: string, note: string) => void;
-  onUpdateCategory: (id: string, category: string) => void;
+  emptyText: string;
+  actionLabel: string;
+  actionBusyLabel: string;
+  onAction: (id: string) => void;
   onSetActive: (id: string | null) => void;
 }
 
-function statusClassName(status: string) {
-  return `status-${status.replace(/\s+/g, '-')}`;
+function formatTimestamp(value?: string): string {
+  if (!value) {
+    return 'עדיין לא בוצעה פעולה';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat('he-IL', {
+    dateStyle: 'short',
+    timeStyle: 'short',
+  }).format(date);
 }
 
 export const DataTable: React.FC<Props> = ({
+  title,
+  subtitle,
+  kind,
   users,
   activeId,
-  canUnfollow,
-  isQueueProcessing,
+  canAct,
+  busyUserId,
   currentProcessingUsername,
-  onManualUnfollow,
-  onUpdateStatus,
-  onUpdateNote,
-  onUpdateCategory,
+  emptyText,
+  actionLabel,
+  actionBusyLabel,
+  onAction,
   onSetActive,
 }) => {
   const handleOpen = (username: string) => {
@@ -40,36 +58,59 @@ export const DataTable: React.FC<Props> = ({
   };
 
   return (
-    <div className="table-shell">
-      <div className="table-container">
+    <section className="table-panel">
+      <div className="panel-header">
+        <div>
+          <p className="eyebrow">{kind === 'pending' ? 'רשימת עבודה' : 'רשימת כשלונות'}</p>
+          <h3>{title}</h3>
+        </div>
+        <span className={`tiny-badge ${kind === 'pending' ? 'tiny-badge-idle' : 'tiny-badge-danger'}`}>{users.length}</span>
+      </div>
+      <p className="panel-copy">{subtitle}</p>
+
+      <div className="table-shell">
         <table className="data-table">
           <thead>
             <tr>
-              <th>Profile</th>
-              <th>Quick Actions</th>
-              <th>Status</th>
-              <th>Category</th>
-              <th>Notes</th>
+              <th>פרופיל</th>
+              <th>מצב</th>
+              <th>פרטים</th>
+              <th>פעולה</th>
             </tr>
           </thead>
           <tbody>
             {users.map((user) => {
               const isActive = user.id === activeId;
               const isProcessingThisUser = currentProcessingUsername?.toLowerCase() === user.username.toLowerCase();
-              const rowLocked = isQueueProcessing;
-              const displayStatus = isProcessingThisUser ? 'processing' : user.status;
+              const isBusy = busyUserId === user.id;
+              const isAnotherRowBusy = Boolean(busyUserId && busyUserId !== user.id);
+              const rowLocked = !canAct || isAnotherRowBusy;
+              const statusLabel = kind === 'failed'
+                ? 'לא הוסר'
+                : isBusy
+                  ? 'טוען...'
+                  : isProcessingThisUser
+                    ? 'הבוט עובד עכשיו'
+                    : 'מוכן להסרה';
+              const detailText = kind === 'failed'
+                ? user.failureReason || 'הבוט לא הצליח להסיר את המשתמש הזה.'
+                : isBusy
+                  ? 'הבקשה נשלחה לבוט. ממתין לאישור...'
+                  : isProcessingThisUser
+                    ? 'הסרה אוטומטית פועלת כרגע ברקע.'
+                    : 'לחץ על הכפתור כדי להסיר עוקב בצורה ידנית.';
 
               return (
                 <tr
                   key={user.id}
-                  className={`${isActive ? 'active-row' : ''} ${isProcessingThisUser ? 'processing-row' : ''}`}
+                  className={`${isActive ? 'active-row' : ''} ${isProcessingThisUser || isBusy ? 'processing-row' : ''}`}
                   onClick={() => onSetActive(user.id)}
                 >
                   <td className="user-cell">
                     <div className="user-meta">
                       <span className="username">@{user.username}</span>
                       <span className="user-subline">
-                        {isProcessingThisUser ? 'Bot is processing this profile now.' : 'Instagram profile'}
+                        {kind === 'failed' ? 'הועבר לרשימת כשלונות' : 'פרופיל אינסטגרם'}
                       </span>
                     </div>
                     <div className="mini-actions">
@@ -79,7 +120,7 @@ export const DataTable: React.FC<Props> = ({
                           event.stopPropagation();
                           copyToClipboard(user.username);
                         }}
-                        title="Copy username"
+                        title="העתקת שם משתמש"
                       >
                         <Copy size={14} />
                       </button>
@@ -89,98 +130,60 @@ export const DataTable: React.FC<Props> = ({
                           event.stopPropagation();
                           handleOpen(user.username);
                         }}
-                        title="Open profile"
+                        title="פתיחת פרופיל"
                       >
                         <ExternalLink size={14} />
                       </button>
                     </div>
                   </td>
                   <td>
-                    <div className="action-chip-row">
-                      <button
-                        className="chip-button chip-keep"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onUpdateStatus(user.id, 'kept');
-                        }}
-                        disabled={rowLocked}
-                        title={rowLocked ? 'Stop the bot queue before editing statuses' : 'Mark as kept'}
-                      >
-                        <Check size={14} /> Keep
-                      </button>
-                      <button
-                        className="chip-button chip-skip"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onUpdateStatus(user.id, 'skipped');
-                        }}
-                        disabled={rowLocked}
-                        title={rowLocked ? 'Stop the bot queue before editing statuses' : 'Skip this profile'}
-                      >
-                        <Pause size={14} /> Skip
-                      </button>
-                      <button
-                        className="chip-button chip-danger"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onManualUnfollow(user.id);
-                        }}
-                        disabled={!canUnfollow || rowLocked}
-                        title={!canUnfollow ? 'Sign in first' : rowLocked ? 'Stop the bot queue before manual unfollows' : 'Unfollow now'}
-                      >
-                        {isProcessingThisUser ? <LoaderCircle size={14} className="spin" /> : <X size={14} />} Unfollow
-                      </button>
-                      {user.status !== 'pending' && (
-                        <button
-                          className="chip-button chip-reset"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onUpdateStatus(user.id, 'pending');
-                          }}
-                          disabled={rowLocked}
-                          title={rowLocked ? 'Stop the bot queue before editing statuses' : 'Move back to pending'}
-                        >
-                          <RotateCcw size={14} /> Pending
-                        </button>
-                      )}
+                    <span className={`status-badge ${kind === 'failed' ? 'status-failed' : isBusy || isProcessingThisUser ? 'status-processing' : 'status-pending'}`}>
+                      {statusLabel}
+                    </span>
+                  </td>
+                  <td>
+                    <div className="detail-stack">
+                      <span>{detailText}</span>
+                      <span className="detail-meta">{formatTimestamp(user.lastAttemptAt)}</span>
                     </div>
                   </td>
                   <td>
-                    <span className={`status-badge ${statusClassName(displayStatus)}`}>{displayStatus}</span>
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      value={user.category}
-                      onChange={(event) => onUpdateCategory(user.id, event.target.value)}
-                      placeholder="friend, brand, creator"
-                      className="inline-input"
-                      disabled={rowLocked}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="text"
-                      value={user.notes}
-                      onChange={(event) => onUpdateNote(user.id, event.target.value)}
-                      placeholder="Anything worth remembering?"
-                      className="inline-input full-width"
-                      disabled={rowLocked}
-                    />
+                    <button
+                      className={`chip-button ${kind === 'failed' ? 'chip-retry' : 'chip-danger'}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onAction(user.id);
+                      }}
+                      disabled={rowLocked || isBusy}
+                    >
+                      {isBusy ? (
+                        <>
+                          <LoaderCircle size={14} className="spin" /> {actionBusyLabel}
+                        </>
+                      ) : kind === 'failed' ? (
+                        <>
+                          <RefreshCcw size={14} /> {actionLabel}
+                        </>
+                      ) : (
+                        <>
+                          <X size={14} /> {actionLabel}
+                        </>
+                      )}
+                    </button>
                   </td>
                 </tr>
               );
             })}
             {users.length === 0 && (
               <tr>
-                <td colSpan={5} className="empty-state">
-                  No profiles match the current filters.
+                <td colSpan={4} className="empty-state">
+                  {emptyText}
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 };

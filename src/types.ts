@@ -1,4 +1,4 @@
-export type Status = 'pending' | 'kept' | 'unfollowed manually' | 'skipped';
+export type Status = 'pending' | 'failed';
 export type ImportSource = 'csv' | 'instagram-export' | 'none';
 
 export interface UserRow {
@@ -8,6 +8,8 @@ export interface UserRow {
   notes: string;
   category: string;
   originalIndex: number;
+  failureReason?: string;
+  lastAttemptAt?: string;
 }
 
 export interface ImportSummary {

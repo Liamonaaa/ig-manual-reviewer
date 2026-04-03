@@ -14,29 +14,34 @@ export const parseCSVFile = (file: File): Promise<UserRow[]> => {
           let index = 0;
 
           for (const row of results.data as any[]) {
-            // Find username column regardless of case
             const keys = Object.keys(row);
-            const userKey = keys.find(k => k.toLowerCase().includes('username') || k.toLowerCase() === 'user');
-            
+            const userKey = keys.find((key) => key.toLowerCase().includes('username') || key.toLowerCase() === 'user');
+
             if (!userKey) continue;
-            
+
             let username = (row[userKey] || '').toString().trim();
             if (!username) continue;
-            
+
             if (username.startsWith('@')) {
               username = username.substring(1);
             }
 
-            if (seenUsernames.has(username)) continue;
-            seenUsernames.add(username);
+            const normalizedUsername = username.toLowerCase();
+
+            if (seenUsernames.has(normalizedUsername)) continue;
+            const rawStatus = (row.status || '').toString().trim().toLowerCase();
+            const failureReason = (row.failureReason || row.failure_reason || row.error || row.notes || '').toString().trim();
+            seenUsernames.add(normalizedUsername);
 
             rows.push({
               id: uuidv4(),
               username,
-              status: ['pending', 'kept', 'unfollowed manually', 'skipped'].includes(row.status?.toLowerCase()) ? row.status.toLowerCase() : 'pending',
+              status: rawStatus === 'failed' ? 'failed' : 'pending',
               notes: row.notes || '',
               category: row.category || '',
               originalIndex: index++,
+              failureReason,
+              lastAttemptAt: row.lastAttemptAt || row.last_attempt_at || '',
             });
           }
           resolve(rows);
@@ -52,20 +57,22 @@ export const parseCSVFile = (file: File): Promise<UserRow[]> => {
 };
 
 export const exportToCSV = (users: UserRow[]) => {
-  const data = users.map(u => ({
-    username: u.username,
-    status: u.status,
-    notes: u.notes,
-    category: u.category
+  const data = users.map((user) => ({
+    username: user.username,
+    status: user.status,
+    failureReason: user.failureReason || '',
+    notes: user.notes,
+    category: user.category,
+    lastAttemptAt: user.lastAttemptAt || '',
   }));
-  
+
   const csv = Papa.unparse(data);
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
-  
+
   const link = document.createElement('a');
   link.setAttribute('href', url);
-  link.setAttribute('download', 'reviewed_users.csv');
+  link.setAttribute('download', 'instagram-review-export.csv');
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

@@ -32,7 +32,7 @@ export const CSVImporter: React.FC<Props> = ({ onImport }) => {
         <UploadCloud size={48} className="importer-icon" />
         <h2>Import CSV or Instagram ZIP</h2>
         <p>Select a CSV with usernames or a ZIP exported directly from Instagram.</p>
-        <p className="importer-hint">Instagram ZIP support automatically calculates who you follow that does not follow you back.</p>
+        <p className="importer-hint">Instagram ZIP support automatically calculates who you follow that does not follow you back, then you can sign into your own account in the panel above.</p>
         <input 
           type="file" 
           accept=".csv,.zip,application/zip" 

@@ -5,6 +5,7 @@ import { ExternalLink, Copy, X } from 'lucide-react';
 interface Props {
   users: UserRow[];
   activeId: string | null;
+  canUnfollow: boolean;
   onUpdateStatus: (id: string, status: Status) => void;
   onUpdateNote: (id: string, note: string) => void;
   onUpdateCategory: (id: string, category: string) => void;
@@ -14,6 +15,7 @@ interface Props {
 export const DataTable: React.FC<Props> = ({
   users,
   activeId,
+  canUnfollow,
   onUpdateStatus,
   onUpdateNote,
   onUpdateCategory,
@@ -72,7 +74,9 @@ export const DataTable: React.FC<Props> = ({
                   <button 
                     className="big-x-button delete-button" 
                     onClick={(e) => { e.stopPropagation(); onUpdateStatus(u.id, 'unfollowed manually'); }} 
-                    title="Unfollow (U)">
+                    title={canUnfollow ? 'Unfollow (U)' : 'Log in to Instagram first'}
+                    disabled={!canUnfollow}
+                  >
                     <X size={20} /> <span style={{fontWeight: 600, paddingLeft: '4px'}}>Unfollow</span>
                   </button>
                 </div>

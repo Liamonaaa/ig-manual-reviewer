@@ -1,5 +1,5 @@
 export type Status = 'pending' | 'kept' | 'unfollowed manually' | 'skipped';
-export type ImportSource = 'csv' | 'instagram-export' | 'seed';
+export type ImportSource = 'csv' | 'instagram-export' | 'none';
 
 export interface UserRow {
   id: string;

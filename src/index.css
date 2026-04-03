@@ -51,6 +51,10 @@ body {
   min-height: 80vh;
 }
 
+.import-flow {
+  width: min(980px, 100%);
+}
+
 /* Header */
 .app-header {
   background-color: var(--panel-bg);
@@ -174,6 +178,102 @@ button {
   margin-top: 1rem;
 }
 
+.connection-panel {
+  background-color: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  margin: 0 2rem 1.5rem;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+}
+
+.connection-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1.25rem;
+}
+
+.connection-header h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.05rem;
+}
+
+.connection-header p {
+  margin: 0;
+  color: var(--text-secondary);
+  max-width: 680px;
+}
+
+.session-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--primary);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.connection-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
+
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.field-group span {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.connection-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.status-strip {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.45rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.status-online {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+}
+
+.status-offline {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+}
+
+.status-idle {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--primary);
+}
+
 /* Dashboard */
 .dashboard {
   max-width: 1400px;
@@ -217,6 +317,7 @@ button {
   display: flex;
   gap: 1rem;
   margin-bottom: 1.5rem;
+  flex-wrap: wrap;
 }
 
 .search-input, .filter-select, .inline-input {
@@ -319,6 +420,12 @@ button {
   background-color: var(--danger-hover) !important;
 }
 
+.big-x-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
 .quick-actions button {
   padding: 0.4rem;
   background-color: var(--panel-bg);
@@ -371,4 +478,27 @@ kbd {
   border-radius: 0.25rem;
   font-family: monospace;
   color: var(--text-primary);
+}
+
+@media (max-width: 920px) {
+  .connection-header {
+    flex-direction: column;
+  }
+
+  .connection-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .connection-panel {
+    margin: 0 1rem 1.25rem;
+  }
+
+  .dashboard {
+    padding: 1rem;
+  }
+
+  .stats-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }

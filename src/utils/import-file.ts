@@ -17,6 +17,17 @@ type InstagramFollowingPayload = {
   relationships_following?: InstagramRelationshipItem[];
 };
 
+function buildImportResult(nonFollowers: string[], followingCount: number, followerCount: number): ImportResult {
+  return {
+    users: buildUserRows(nonFollowers, 'not following back'),
+    source: 'instagram-export',
+    summary: {
+      label: `${nonFollowers.length} accounts do not follow you back`,
+      details: `Following: ${followingCount} | Followers: ${followerCount}`,
+    },
+  };
+}
+
 function normalizeUsername(username: string): string {
   return username.trim().replace(/^@+/, '').toLowerCase();
 }
@@ -27,7 +38,7 @@ function extractUsernameFromHref(href?: string): string | null {
   }
 
   try {
-    const url = new URL(href);
+    const url = new URL(href, 'https://www.instagram.com');
     const segments = url.pathname.split('/').filter(Boolean);
     const usernameSegment = segments[segments.length - 1];
     return usernameSegment ? normalizeUsername(usernameSegment) : null;
@@ -66,17 +77,31 @@ function buildUserRows(usernames: string[], category = ''): UserRow[] {
   }));
 }
 
-async function parseInstagramExport(file: File): Promise<ImportResult> {
-  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+function extractUsernamesFromHtml(html: string): string[] {
+  const document = new DOMParser().parseFromString(html, 'text/html');
+  const usernames: string[] = [];
+  const seen = new Set<string>();
+
+  for (const anchor of Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'))) {
+    const username = extractUsernameFromHref(anchor.getAttribute('href') ?? undefined);
+
+    if (!username || seen.has(username)) {
+      continue;
+    }
+
+    seen.add(username);
+    usernames.push(username);
+  }
+
+  return usernames;
+}
+
+async function parseInstagramJsonExport(zip: JSZip): Promise<ImportResult | null> {
   const followingEntry = zip.file(/(^|\/)following\.json$/i)[0];
   const followerEntries = zip.file(/(^|\/)followers(?:_\d+)?\.json$/i);
 
-  if (!followingEntry) {
-    throw new Error('Instagram export is missing following.json');
-  }
-
-  if (followerEntries.length === 0) {
-    throw new Error('Instagram export is missing followers files');
+  if (!followingEntry || followerEntries.length === 0) {
+    return null;
   }
 
   const followingPayload = JSON.parse(await followingEntry.async('text')) as InstagramFollowingPayload;
@@ -107,14 +132,57 @@ async function parseInstagramExport(file: File): Promise<ImportResult> {
 
   const nonFollowers = followingUsers.filter((username) => !followerSet.has(username));
 
-  return {
-    users: buildUserRows(nonFollowers, 'not following back'),
-    source: 'instagram-export',
-    summary: {
-      label: `${nonFollowers.length} accounts do not follow you back`,
-      details: `Following: ${followingUsers.length} | Followers: ${followerSet.size}`,
-    },
-  };
+  return buildImportResult(nonFollowers, followingUsers.length, followerSet.size);
+}
+
+async function parseInstagramHtmlExport(zip: JSZip): Promise<ImportResult | null> {
+  const followingEntry = zip.file(/(^|\/)following\.html$/i)[0];
+  const followerEntries = zip.file(/(^|\/)followers(?:_\d+)?\.html$/i);
+
+  if (!followingEntry || followerEntries.length === 0) {
+    return null;
+  }
+
+  const followingUsers = extractUsernamesFromHtml(await followingEntry.async('text'));
+  const followerSet = new Set<string>();
+
+  for (const entry of followerEntries) {
+    const usernames = extractUsernamesFromHtml(await entry.async('text'));
+    for (const username of usernames) {
+      followerSet.add(username);
+    }
+  }
+
+  const nonFollowers = followingUsers.filter((username) => !followerSet.has(username));
+
+  return buildImportResult(nonFollowers, followingUsers.length, followerSet.size);
+}
+
+async function parseInstagramExport(file: File): Promise<ImportResult> {
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const jsonResult = await parseInstagramJsonExport(zip);
+
+  if (jsonResult) {
+    return jsonResult;
+  }
+
+  const htmlResult = await parseInstagramHtmlExport(zip);
+
+  if (htmlResult) {
+    return htmlResult;
+  }
+
+  const knownEntries = zip.file(/(^|\/)(following|followers(?:_\d+)?)\.(json|html)$/i);
+
+  if (knownEntries.some((entry) => entry.name.toLowerCase().endsWith('.html'))) {
+    throw new Error('Instagram export ZIP is missing following.html or followers_*.html files.');
+  }
+
+  if (knownEntries.some((entry) => entry.name.toLowerCase().endsWith('.json'))) {
+    throw new Error('Instagram export ZIP is missing following.json or followers files.');
+  }
+
+  throw new Error('Instagram export ZIP is missing supported following/followers files.');
 }
 
 async function parseCsvImport(file: File): Promise<ImportResult> {

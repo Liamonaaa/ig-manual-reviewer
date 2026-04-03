@@ -1,6 +1,6 @@
 import React from 'react';
 import { UserRow, Status } from '../types';
-import { ExternalLink, Copy, Check, X, SkipForward, Clock } from 'lucide-react';
+import { ExternalLink, Copy, X } from 'lucide-react';
 
 interface Props {
   users: UserRow[];

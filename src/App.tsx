@@ -1,4 +1,4 @@
-import { startTransition, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Bot,
@@ -24,6 +24,9 @@ import { ImportResult, ImportSource, ImportSummary, UserRow } from './types';
 import './index.css';
 
 const DEFAULT_BOT_API_BASE_URL = 'http://127.0.0.1:5000';
+const ACTIVE_QUEUE_POLL_INTERVAL_MS = 550;
+const IDLE_QUEUE_POLL_INTERVAL_MS = 2500;
+const AUTO_RECOVERY_RESTART_DELAY_MS = 300;
 
 type BotUsersResponse = {
   success: boolean;
@@ -118,8 +121,8 @@ const buildPendingRows = (usernames: string[]) =>
     failureReason: '',
     lastAttemptAt: '',
   }));
-const reconcileUsersWithRemaining = (currentUsers: UserRow[], remainingUsers: string[]) => {
-  const remaining = new Set(remainingUsers.map(normalizeUsername));
+const reconcileUsersWithRemaining = (currentUsers: UserRow[], remainingUsers: string[], retainedPendingUsernames: string[] = []) => {
+  const remaining = new Set([...remainingUsers.map(normalizeUsername), ...retainedPendingUsernames.map(normalizeUsername)]);
   return currentUsers.filter((user) => user.status !== 'pending' || remaining.has(normalizeUsername(user.username)));
 };
 const extractQueueState = (data: BotUsersResponse): QueueState => ({
@@ -166,6 +169,8 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [showConnectionSettings, setShowConnectionSettings] = useState(false);
   const [showImportPanel, setShowImportPanel] = useState(false);
+  const [queueAutoRun, setQueueAutoRun] = useState(false);
+  const [isQueueRecovering, setIsQueueRecovering] = useState(false);
 
   const normalizedBotBaseUrl = useMemo(() => normalizeBaseUrl(botBaseUrl), [botBaseUrl]);
   const deferredSearch = useDeferredValue(search.trim().toLowerCase());
@@ -191,6 +196,13 @@ export default function App() {
   const currentWorkspaceKey = authState.instagramUsername ? normalizeUsername(authState.instagramUsername) : '';
   const loginWorkspaceHint = loginUsername ? savedWorkspaces[normalizeUsername(loginUsername)] ?? null : null;
   const hasWorkspaceData = users.length > 0 || importSource !== 'none' || Boolean(importSummary);
+  const usersRef = useRef(users);
+  const activeIdRef = useRef(activeId);
+  const workspaceKeyRef = useRef(currentWorkspaceKey);
+  const queueAutoRunRef = useRef(queueAutoRun);
+  const autoRecoveryLockRef = useRef(false);
+  const lastQueueUsernameRef = useRef<string | null>(null);
+  const lastRecoveredFailureKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -198,11 +210,20 @@ export default function App() {
     document.documentElement.setAttribute('dir', 'rtl');
   }, [theme]);
 
+  useEffect(() => { usersRef.current = users; }, [users]);
+  useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+  useEffect(() => { workspaceKeyRef.current = currentWorkspaceKey; }, [currentWorkspaceKey]);
+  useEffect(() => { queueAutoRunRef.current = queueAutoRun; }, [queueAutoRun]);
   useEffect(() => setBotBaseUrlInput(botBaseUrl), [botBaseUrl]);
   useEffect(() => setCurrentPage((page) => Math.min(page, totalPages)), [totalPages]);
   useEffect(() => {
     if (!keyboardUsers.some((user) => user.id === activeId)) setActiveId(getActiveId(keyboardUsers));
   }, [keyboardUsers, activeId]);
+  useEffect(() => {
+    if (queueState.isProcessing && queueState.currentUsername) {
+      lastQueueUsernameRef.current = normalizeUsername(queueState.currentUsername);
+    }
+  }, [queueState.isProcessing, queueState.currentUsername]);
 
   const buildApiUrl = (path: string, baseUrl = normalizedBotBaseUrl) => `${baseUrl}${path}`;
 
@@ -236,7 +257,62 @@ export default function App() {
       setShowImportPanel(false);
       setActiveId(null);
     });
+    usersRef.current = [];
+    activeIdRef.current = null;
     setManualActionUserId(null);
+    setQueueAutoRun(false);
+    setIsQueueRecovering(false);
+    queueAutoRunRef.current = false;
+    autoRecoveryLockRef.current = false;
+    lastQueueUsernameRef.current = null;
+    lastRecoveredFailureKeyRef.current = null;
+  };
+
+  const persistUsersSnapshot = (nextUsers: UserRow[]) => {
+    usersRef.current = nextUsers;
+
+    startTransition(() => {
+      setUsers(nextUsers);
+      const nextActiveId =
+        activeIdRef.current && nextUsers.some((user) => user.id === activeIdRef.current)
+          ? activeIdRef.current
+          : getActiveId(nextUsers);
+      setActiveId(nextActiveId);
+    });
+
+    if (workspaceKeyRef.current) {
+      saveWorkspaceSnapshot(workspaceKeyRef.current, nextUsers);
+    }
+
+    return nextUsers;
+  };
+
+  const movePendingUserToFailed = (username: string, reason: string) => {
+    const normalizedUsername = normalizeUsername(username);
+    const attemptTime = new Date().toISOString();
+    let didMove = false;
+
+    const nextUsers = usersRef.current.map((currentUser) => {
+      if (normalizeUsername(currentUser.username) === normalizedUsername) {
+        didMove = true;
+        return {
+          ...currentUser,
+          status: 'failed' as const,
+          notes: reason,
+          failureReason: reason,
+          lastAttemptAt: attemptTime,
+        };
+      }
+
+      return currentUser;
+    });
+
+    if (!didMove) {
+      return { didMove: false, nextUsers: usersRef.current };
+    }
+
+    persistUsersSnapshot(nextUsers);
+    return { didMove: true, nextUsers };
   };
 
   const applyBotState = (data: BotUsersResponse, options?: { reconcile?: boolean; allowRestore?: boolean; silent?: boolean }) => {
@@ -280,9 +356,17 @@ export default function App() {
     if (options?.reconcile && (queue.totalLoadedCount > 0 || queue.remainingUsers.length > 0 || queue.lastProcessedUsername)) {
       let nextUsersSnapshot: UserRow[] = users;
       let nextActiveId: string | null | undefined;
+      const failedUsernameToRetain =
+        !queue.isProcessing && queue.lastError
+          ? normalizeUsername(queue.currentUsername || lastQueueUsernameRef.current || '')
+          : '';
 
       setUsers((currentUsers) => {
-        const updatedUsers = reconcileUsersWithRemaining(currentUsers, queue.remainingUsers);
+        const updatedUsers = reconcileUsersWithRemaining(
+          currentUsers,
+          queue.remainingUsers,
+          failedUsernameToRetain ? [failedUsernameToRetain] : [],
+        );
         nextUsersSnapshot = updatedUsers;
         if (activeId && !updatedUsers.some((user) => user.id === activeId)) nextActiveId = getActiveId(updatedUsers);
         return updatedUsers;
@@ -323,6 +407,18 @@ export default function App() {
     const data = (await response.json()) as BotUsersResponse;
     if (!response.ok || !data.success) throw new Error(data.error ?? `העדכון נכשל עם קוד ${response.status}`);
     applyBotState(data, { reconcile: false, allowRestore: false, silent: true });
+  };
+
+  const requestQueueStart = async () => {
+    const response = await fetch(buildApiUrl('/api/queue/start'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientSessionId }),
+    });
+    const data = (await response.json()) as BotUsersResponse;
+    if (!response.ok || !data.success) throw new Error(data.error ?? `ההפעלה נכשלה עם קוד ${response.status}`);
+    applyBotState(data, { reconcile: false, allowRestore: false, silent: true });
+    return data;
   };
 
   const setBotUrl = () => {
@@ -387,7 +483,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    if (queueState.isProcessing || manualActionUserId) {
+    if (queueState.isProcessing || manualActionUserId || isQueueRecovering) {
       setNotice({ tone: 'danger', text: 'עצור קודם את כל הפעולות הפעילות ואז תתנתק.' });
       return;
     }
@@ -425,11 +521,14 @@ export default function App() {
       return;
     }
 
-    if (queueState.isProcessing) {
+    if (queueState.isProcessing || isQueueRecovering) {
       setNotice({ tone: 'danger', text: 'עצור קודם את התור האוטומטי ואז טען קובץ חדש.' });
       return;
     }
 
+    setQueueAutoRun(false);
+    queueAutoRunRef.current = false;
+    lastRecoveredFailureKeyRef.current = null;
     setIsImporting(true);
     const nextUsers = normalizeUsers(result.users);
 
@@ -458,20 +557,18 @@ export default function App() {
   const handleStartQueue = async () => {
     if (!authState.authenticated) return setNotice({ tone: 'danger', text: 'צריך להתחבר קודם לאינסטגרם.' });
     if (pendingUsers.length === 0) return setNotice({ tone: 'info', text: 'אין כרגע משתמשים שממתינים להסרה.' });
+    if (isQueueRecovering) return setNotice({ tone: 'info', text: 'התור כבר מתאושש מתקלה וממשיך אוטומטית.' });
 
     setIsQueueBusy(true);
     try {
-      const response = await fetch(buildApiUrl('/api/queue/start'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientSessionId }),
-      });
-      const data = (await response.json()) as BotUsersResponse;
-      if (!response.ok || !data.success) throw new Error(data.error ?? `ההפעלה נכשלה עם קוד ${response.status}`);
-      applyBotState(data, { reconcile: false, allowRestore: false, silent: true });
-      setNotice({ tone: 'success', text: 'התור האוטומטי התחיל לעבוד ברקע.' });
+      lastRecoveredFailureKeyRef.current = null;
+      autoRecoveryLockRef.current = false;
+      await requestQueueStart();
+      setQueueAutoRun(true);
+      setNotice({ tone: 'success', text: 'התור האוטומטי התחיל לעבוד ברקע במצב מהיר.' });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+      setQueueAutoRun(false);
       setNotice({ tone: 'danger', text: `לא הצלחתי להפעיל את התור: ${message}` });
     } finally {
       setIsQueueBusy(false);
@@ -479,8 +576,13 @@ export default function App() {
   };
 
   const handleStopQueue = async () => {
-    if (!queueState.isProcessing) return setNotice({ tone: 'info', text: 'התור כבר עצור.' });
+    if (!queueState.isProcessing && !isQueueRecovering) return setNotice({ tone: 'info', text: 'התור כבר עצור.' });
 
+    setQueueAutoRun(false);
+    queueAutoRunRef.current = false;
+    setIsQueueRecovering(false);
+    autoRecoveryLockRef.current = false;
+    lastRecoveredFailureKeyRef.current = null;
     setIsQueueBusy(true);
     try {
       const response = await fetch(buildApiUrl('/api/queue/stop'), {
@@ -501,9 +603,9 @@ export default function App() {
   };
 
   const handleManualUnfollow = async (id: string) => {
-    const user = users.find((currentUser) => currentUser.id === id);
+    const user = usersRef.current.find((currentUser) => currentUser.id === id);
     if (!user || !currentWorkspaceKey) return;
-    if (queueState.isProcessing) return setNotice({ tone: 'danger', text: 'עצור קודם את התור האוטומטי ואז נסה שוב.' });
+    if (queueState.isProcessing || isQueueRecovering) return setNotice({ tone: 'danger', text: 'עצור קודם את התור האוטומטי ואז נסה שוב.' });
     if (manualActionUserId) return;
 
     setManualActionUserId(id);
@@ -518,31 +620,12 @@ export default function App() {
       const data = (await response.json()) as BotUsersResponse;
       if (!response.ok || !data.success) throw new Error(data.error ?? `ההסרה נכשלה עם קוד ${response.status}`);
 
-      let nextUsersSnapshot: UserRow[] = users;
-      let nextActiveId: string | null | undefined;
-
-      setUsers((currentUsers) => {
-        const updatedUsers = currentUsers.filter((currentUser) => currentUser.id !== id);
-        nextUsersSnapshot = updatedUsers;
-        if (activeId && !updatedUsers.some((currentUser) => currentUser.id === activeId)) nextActiveId = getActiveId(updatedUsers);
-        return updatedUsers;
-      });
-
-      if (nextActiveId !== undefined) setActiveId(nextActiveId);
-      saveWorkspaceSnapshot(currentWorkspaceKey, nextUsersSnapshot);
+      persistUsersSnapshot(usersRef.current.filter((currentUser) => currentUser.id !== id));
       applyBotState(data, { reconcile: false, allowRestore: false, silent: true });
       setNotice({ tone: 'success', text: `העוקב של @${user.username} הוסר בהצלחה.` });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
-      const attemptTime = new Date().toISOString();
-      const nextUsersSnapshot = users.map((currentUser) =>
-        currentUser.id === id
-          ? { ...currentUser, status: 'failed' as const, notes: message, failureReason: message, lastAttemptAt: attemptTime }
-          : currentUser,
-      );
-
-      setUsers(nextUsersSnapshot);
-      saveWorkspaceSnapshot(currentWorkspaceKey, nextUsersSnapshot);
+      const { nextUsers: nextUsersSnapshot } = movePendingUserToFailed(user.username, message);
       try { await syncPendingUsersToBot(nextUsersSnapshot); } catch {}
       setNotice({ tone: 'danger', text: `לא הצלחתי להסיר את @${user.username}. המשתמש עבר לעמודת "לא הוסר".` });
     } finally {
@@ -552,9 +635,12 @@ export default function App() {
 
   const handleClearSession = async () => {
     if (!currentWorkspaceKey) return;
-    if (queueState.isProcessing || manualActionUserId) return setNotice({ tone: 'danger', text: 'עצור קודם את כל הפעולות הפעילות ואז נקה התקדמות.' });
+    if (queueState.isProcessing || manualActionUserId || isQueueRecovering) return setNotice({ tone: 'danger', text: 'עצור קודם את כל הפעולות הפעילות ואז נקה התקדמות.' });
     if (!window.confirm('למחוק את כל ההתקדמות השמורה של החשבון הזה?')) return;
 
+    setQueueAutoRun(false);
+    queueAutoRunRef.current = false;
+    lastRecoveredFailureKeyRef.current = null;
     try { await syncPendingUsersToBot([]); } catch {}
 
     setSavedWorkspaces((current) => {
@@ -567,15 +653,89 @@ export default function App() {
     setNotice({ tone: 'info', text: 'ההתקדמות השמורה נמחקה.' });
   };
 
+  useEffect(() => {
+    if (!queueAutoRun || queueState.isProcessing || isQueueRecovering || queueState.stopRequested || !queueState.lastError) return;
+
+    const failedUsername = normalizeUsername(queueState.currentUsername || lastQueueUsernameRef.current || '');
+    if (!failedUsername) {
+      setQueueAutoRun(false);
+      setNotice({ tone: 'danger', text: `התור נעצר על שגיאה ולא התקבל שם המשתמש שנכשל: ${queueState.lastError}` });
+      return;
+    }
+
+    const isStillPending = usersRef.current.some(
+      (user) => user.status === 'pending' && normalizeUsername(user.username) === failedUsername,
+    );
+    if (!isStillPending) return;
+
+    const failureKey = `${failedUsername}::${queueState.lastError}::${queueState.processedCount}::${queueState.pendingCount}`;
+    if (autoRecoveryLockRef.current || lastRecoveredFailureKeyRef.current === failureKey) return;
+
+    autoRecoveryLockRef.current = true;
+    lastRecoveredFailureKeyRef.current = failureKey;
+    setIsQueueRecovering(true);
+
+    void (async () => {
+      try {
+        const { nextUsers } = movePendingUserToFailed(failedUsername, queueState.lastError || 'הבוט עצר את ההסרה האוטומטית.');
+        await syncPendingUsersToBot(nextUsers);
+
+        const remainingPendingCount = nextUsers.filter((user) => user.status === 'pending').length;
+        if (remainingPendingCount > 0 && queueAutoRunRef.current) {
+          await new Promise((resolve) => window.setTimeout(resolve, AUTO_RECOVERY_RESTART_DELAY_MS));
+          await requestQueueStart();
+          setNotice({ tone: 'info', text: `@${failedUsername} הועבר ל"לא הוסר". התור המשיך אוטומטית.` });
+        } else {
+          setQueueAutoRun(false);
+          setNotice({ tone: 'info', text: `@${failedUsername} הועבר ל"לא הוסר". לא נשארו משתמשים נוספים בתור.` });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+        setQueueAutoRun(false);
+        setNotice({ tone: 'danger', text: `@${failedUsername} הועבר ל"לא הוסר", אבל ההמשך האוטומטי נכשל: ${message}` });
+      } finally {
+        setIsQueueRecovering(false);
+        autoRecoveryLockRef.current = false;
+      }
+    })();
+  }, [
+    isQueueRecovering,
+    queueAutoRun,
+    queueState.currentUsername,
+    queueState.isProcessing,
+    queueState.lastError,
+    queueState.pendingCount,
+    queueState.processedCount,
+    queueState.stopRequested,
+  ]);
+
+  useEffect(() => {
+    if (!queueAutoRun || queueState.isProcessing || isQueueRecovering || queueState.lastError || pendingUsers.length > 0) return;
+
+    setQueueAutoRun(false);
+    lastQueueUsernameRef.current = null;
+    lastRecoveredFailureKeyRef.current = null;
+    setNotice({ tone: 'success', text: 'התור האוטומטי הסתיים בהצלחה.' });
+  }, [isQueueRecovering, pendingUsers.length, queueAutoRun, queueState.isProcessing, queueState.lastError]);
+
   useEffect(() => { void fetchBotState(true, false); }, [clientSessionId, normalizedBotBaseUrl]);
 
   useEffect(() => {
     if (!authState.authenticated && users.length === 0 && queueState.totalLoadedCount === 0) return;
     const intervalId = window.setInterval(() => {
       void fetchBotState(true, queueState.isProcessing || queueState.totalLoadedCount > 0 || Boolean(queueState.lastProcessedUsername));
-    }, queueState.isProcessing ? 1200 : 5000);
+    }, queueState.isProcessing || isQueueRecovering ? ACTIVE_QUEUE_POLL_INTERVAL_MS : IDLE_QUEUE_POLL_INTERVAL_MS);
     return () => window.clearInterval(intervalId);
-  }, [authState.authenticated, clientSessionId, normalizedBotBaseUrl, queueState.isProcessing, queueState.lastProcessedUsername, queueState.totalLoadedCount, users.length]);
+  }, [
+    authState.authenticated,
+    clientSessionId,
+    isQueueRecovering,
+    normalizedBotBaseUrl,
+    queueState.isProcessing,
+    queueState.lastProcessedUsername,
+    queueState.totalLoadedCount,
+    users.length,
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -591,12 +751,17 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeId, keyboardUsers, queueState.isProcessing, manualActionUserId]);
+  }, [activeId, isQueueRecovering, keyboardUsers, queueState.isProcessing, manualActionUserId]);
 
   const statusStrip = (
     <div className="status-strip">
       <span className={`status-pill ${authState.serverReachable ? 'status-online' : 'status-offline'}`}>{authState.serverReachable ? 'הבוט זמין' : 'הבוט לא זמין'}</span>
       <span className={`status-pill ${authState.authenticated ? 'status-online' : 'status-idle'}`}>{authState.authenticated ? `מחובר כ־@${authState.instagramUsername}` : 'לא מחובר'}</span>
+      {(queueState.isProcessing || queueAutoRun || isQueueRecovering) && (
+        <span className={`status-pill ${isQueueRecovering ? 'status-offline' : 'status-online'}`}>
+          {isQueueRecovering ? 'מתאושש מתקלה' : 'תור מהיר פעיל'}
+        </span>
+      )}
       {importSource !== 'none' && <span className="status-pill status-idle">{importSource === 'instagram-export' ? 'קובץ אינסטגרם' : 'CSV'}</span>}
       {importSummaryText && <span className="status-pill status-idle">{importSummaryText}</span>}
     </div>
@@ -624,7 +789,7 @@ export default function App() {
             {authState.authenticated && <>
               <button className="ghost-button" onClick={() => setShowConnectionSettings((current) => !current)}><Settings2 size={16} /> הגדרות</button>
               <button className="ghost-button" onClick={() => void fetchBotState(false, true)} disabled={isSyncing}><RefreshCw size={16} className={isSyncing ? 'spin' : ''} /> {isSyncing ? 'מסנכרן...' : 'סנכרון'}</button>
-              <button className="ghost-button danger-text" onClick={() => void handleLogout()} disabled={isAuthBusy}><LogOut size={16} /> התנתקות</button>
+              <button className="ghost-button danger-text" onClick={() => void handleLogout()} disabled={isAuthBusy || isQueueRecovering}><LogOut size={16} /> התנתקות</button>
             </>}
             <button className="icon-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
           </div>
@@ -662,15 +827,15 @@ export default function App() {
             <section className="glass-card hero-card"><p className="eyebrow">שלב 2</p><h2>עכשיו מעלים את קובץ האינסטגרם</h2><p className="panel-copy">אתה מחובר כ־@{authState.instagramUsername}. ברגע שתעלה קובץ, הכל יישמר לחשבון הזה ויחזור בפעם הבאה.</p>{statusStrip}</section>
             {showConnectionSettings && settingsPanel}
             <section className="workspace-grid">
-              <div className="glass-card"><div className="panel-header"><div><p className="eyebrow">ייבוא</p><h3>ZIP של אינסטגרם או CSV</h3></div></div><CSVImporter onImport={handleImport} disabled={isImporting || queueState.isProcessing || Boolean(manualActionUserId)} /></div>
+              <div className="glass-card"><div className="panel-header"><div><p className="eyebrow">ייבוא</p><h3>ZIP של אינסטגרם או CSV</h3></div></div><CSVImporter onImport={handleImport} disabled={isImporting || queueState.isProcessing || isQueueRecovering || Boolean(manualActionUserId)} /></div>
               <aside className="glass-card side-card"><div className="panel-header"><div><p className="eyebrow">מה תקבל כאן</p><h3>מסך עבודה הרבה יותר נקי</h3></div></div><ul className="bullet-list"><li>רק רשימת ממתינים ורשימת "לא הוסר".</li><li>אין יותר Keep ו־Skip.</li><li>ההתקדמות חוזרת אוטומטית בחיבור הבא.</li></ul></aside>
             </section>
           </main>
         ) : (
           <main className="workspace-layout">
             <section className="glass-card hero-card">
-              <div className="hero-row"><div><p className="eyebrow">מרכז שליטה</p><h2>כפתור אחד להסרה, רשימה נפרדת לכשלונות, וכל ההתקדמות נשמרת</h2><p className="panel-copy">הבוט יכול לעבוד ברקע, ואתה נשאר עם מסך נקי וברור לעבודה ידנית.</p></div><div className="hero-actions"><button className="primary-button jumbo-button" onClick={() => void handleStartQueue()} disabled={queueState.isProcessing || isQueueBusy || Boolean(manualActionUserId) || pendingUsers.length === 0}>{queueState.isProcessing || isQueueBusy ? <LoaderCircle size={18} className="spin" /> : <Play size={18} />}{queueState.isProcessing ? 'התור עובד עכשיו' : `הפעלת תור (${pendingUsers.length})`}</button><button className="secondary-button" onClick={() => void handleStopQueue()} disabled={!queueState.isProcessing || isQueueBusy}><Square size={16} /> עצירה</button></div></div>
-              <div className="progress-card"><div className="progress-head"><span>התקדמות הבוט</span><strong>{queueState.processedCount} / {queueProgressBase || 0}</strong></div><div className="progress-track"><div className="progress-fill" style={{ width: `${queueProgressPercent}%` }} /></div><div className="progress-foot"><span>{queueProgressPercent}% הושלם</span><span>{queueState.currentUsername ? `כרגע מטפל ב־@${queueState.currentUsername}` : queueState.lastProcessedUsername ? `האחרון שהושלם: @${queueState.lastProcessedUsername}` : 'ממתין לפעולה הבאה'}</span></div></div>
+              <div className="hero-row"><div><p className="eyebrow">מרכז שליטה</p><h2>כפתור אחד להסרה, רשימה נפרדת לכשלונות, וכל ההתקדמות נשמרת</h2><p className="panel-copy">התור המהיר בודק מצב בתדירות גבוהה יותר, מעביר כשלונות ל"לא הוסר", וממשיך לבד למשתמש הבא.</p></div><div className="hero-actions"><button className="primary-button jumbo-button" onClick={() => void handleStartQueue()} disabled={queueState.isProcessing || isQueueBusy || isQueueRecovering || Boolean(manualActionUserId) || pendingUsers.length === 0}>{queueState.isProcessing || isQueueBusy || isQueueRecovering ? <LoaderCircle size={18} className="spin" /> : <Play size={18} />}{isQueueRecovering ? 'מתאושש וממשיך...' : queueState.isProcessing ? 'התור עובד עכשיו' : `הפעלת תור (${pendingUsers.length})`}</button><button className="secondary-button" onClick={() => void handleStopQueue()} disabled={(!queueState.isProcessing && !isQueueRecovering) || isQueueBusy}><Square size={16} /> עצירה</button></div></div>
+              <div className="progress-card"><div className="progress-head"><span>התקדמות הבוט</span><strong>{queueState.processedCount} / {queueProgressBase || 0}</strong></div><div className="progress-track"><div className="progress-fill" style={{ width: `${queueProgressPercent}%` }} /></div><div className="progress-foot"><span>{queueProgressPercent}% הושלם</span><span>{isQueueRecovering ? 'מזהה תקלה, מעביר לכשלונות וממשיך אוטומטית' : queueState.currentUsername ? `כרגע מטפל ב־@${queueState.currentUsername}` : queueState.lastProcessedUsername ? `האחרון שהושלם: @${queueState.lastProcessedUsername}` : 'ממתין לפעולה הבאה'}</span></div></div>
               {statusStrip}
             </section>
 
@@ -682,17 +847,18 @@ export default function App() {
             </section>
 
             <section className="glass-card controls-card">
-              <div className="control-row"><div><p className="eyebrow">פעולות מהירות</p><h3>הכל במקום אחד</h3></div><div className="action-cluster"><button className="ghost-button" onClick={() => filteredPendingUsers.slice(0, batchSize).forEach((user) => window.open(`https://www.instagram.com/${user.username}/`, '_blank'))} disabled={filteredPendingUsers.length === 0}><Upload size={16} /> פתיחת הבאים</button><button className="ghost-button" onClick={() => exportToCSV(users)}><Download size={16} /> ייצוא CSV</button><button className="ghost-button" onClick={() => setShowImportPanel((current) => !current)} disabled={queueState.isProcessing}><Upload size={16} /> {showImportPanel ? 'הסתרת ייבוא' : 'ייבוא חדש'}</button><button className="ghost-button danger-text" onClick={() => void handleClearSession()} disabled={queueState.isProcessing || Boolean(manualActionUserId)}><Trash2 size={16} /> מחיקת התקדמות</button></div></div>
+              <div className="control-row"><div><p className="eyebrow">פעולות מהירות</p><h3>הכל במקום אחד</h3></div><div className="action-cluster"><button className="ghost-button" onClick={() => filteredPendingUsers.slice(0, batchSize).forEach((user) => window.open(`https://www.instagram.com/${user.username}/`, '_blank'))} disabled={filteredPendingUsers.length === 0}><Upload size={16} /> פתיחת הבאים</button><button className="ghost-button" onClick={() => exportToCSV(users)}><Download size={16} /> ייצוא CSV</button><button className="ghost-button" onClick={() => setShowImportPanel((current) => !current)} disabled={queueState.isProcessing || isQueueRecovering}><Upload size={16} /> {showImportPanel ? 'הסתרת ייבוא' : 'ייבוא חדש'}</button><button className="ghost-button danger-text" onClick={() => void handleClearSession()} disabled={queueState.isProcessing || isQueueRecovering || Boolean(manualActionUserId)}><Trash2 size={16} /> מחיקת התקדמות</button></div></div>
               <div className="filters-row"><label className="field-group"><span>חיפוש</span><input type="text" value={search} onChange={(event) => setSearch(event.target.value)} className="field-input" placeholder="שם משתמש או שגיאה" /></label><label className="field-group field-group-small"><span>בכל עמוד</span><select value={batchSize} onChange={(event) => { setBatchSize(Number(event.target.value)); setCurrentPage(1); }} className="field-input"><option value={25}>25</option><option value={50}>50</option><option value={100}>100</option></select></label></div>
-              {queueState.lastError && <div className="inline-error">{queueState.lastError}</div>}
+              {isQueueRecovering && <div className="inline-info">זוהתה תקלה. המשתמש מועבר ל"לא הוסר" והתור ממשיך אוטומטית.</div>}
+              {queueState.lastError && !isQueueRecovering && <div className="inline-error">{queueState.lastError}</div>}
             </section>
 
-            {showImportPanel && <section className="glass-card"><div className="panel-header"><div><p className="eyebrow">החלפת רשימה</p><h3>טעינת קובץ חדש</h3></div></div><CSVImporter onImport={handleImport} disabled={isImporting || queueState.isProcessing || Boolean(manualActionUserId)} /></section>}
+            {showImportPanel && <section className="glass-card"><div className="panel-header"><div><p className="eyebrow">החלפת רשימה</p><h3>טעינת קובץ חדש</h3></div></div><CSVImporter onImport={handleImport} disabled={isImporting || queueState.isProcessing || isQueueRecovering || Boolean(manualActionUserId)} /></section>}
             {showConnectionSettings && settingsPanel}
 
             <section className="workspace-grid">
-              <DataTable title="ממתינים להסרה" subtitle="כשלוחצים על הכפתור רואים טעינה, ואז הצלחה או מעבר אוטומטי ל-'לא הוסר'." kind="pending" users={paginatedPendingUsers} activeId={activeId} canAct={authState.authenticated && !queueState.isProcessing} busyUserId={manualActionUserId} currentProcessingUsername={queueState.currentUsername} emptyText="אין כרגע משתמשים שממתינים להסרה." actionLabel="הסר עוקב" actionBusyLabel="טוען..." onAction={(id) => void handleManualUnfollow(id)} onSetActive={setActiveId} />
-              <DataTable title="לא הוסר" subtitle="כאן נשמרים כל המשתמשים שהבוט לא הצליח להסיר, עם אפשרות לנסות שוב." kind="failed" users={filteredFailedUsers} activeId={activeId} canAct={authState.authenticated && !queueState.isProcessing} busyUserId={manualActionUserId} currentProcessingUsername={queueState.currentUsername} emptyText="עדיין אין משתמשים ב-'לא הוסר'." actionLabel="נסה שוב" actionBusyLabel="מנסה שוב..." onAction={(id) => void handleManualUnfollow(id)} onSetActive={setActiveId} />
+              <DataTable title="ממתינים להסרה" subtitle="כשלוחצים על הכפתור רואים טעינה, ואז הצלחה או מעבר אוטומטי ל-'לא הוסר'." kind="pending" users={paginatedPendingUsers} activeId={activeId} canAct={authState.authenticated && !queueState.isProcessing && !isQueueRecovering} busyUserId={manualActionUserId} currentProcessingUsername={queueState.currentUsername} emptyText="אין כרגע משתמשים שממתינים להסרה." actionLabel="הסר עוקב" actionBusyLabel="טוען..." onAction={(id) => void handleManualUnfollow(id)} onSetActive={setActiveId} />
+              <DataTable title="לא הוסר" subtitle="כאן נשמרים כל המשתמשים שהבוט לא הצליח להסיר, עם אפשרות לנסות שוב." kind="failed" users={filteredFailedUsers} activeId={activeId} canAct={authState.authenticated && !queueState.isProcessing && !isQueueRecovering} busyUserId={manualActionUserId} currentProcessingUsername={queueState.currentUsername} emptyText="עדיין אין משתמשים ב-'לא הוסר'." actionLabel="נסה שוב" actionBusyLabel="מנסה שוב..." onAction={(id) => void handleManualUnfollow(id)} onSetActive={setActiveId} />
             </section>
 
             <div className="footer-strip"><div className="pagination"><button className="ghost-button" disabled={currentPage === 1} onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}>הקודם</button><span>עמוד {currentPage} מתוך {totalPages}</span><button className="ghost-button" disabled={currentPage >= totalPages} onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}>הבא</button></div><div className="keyboard-shortcuts-hint">קיצורי מקלדת: <kbd>O</kbd> פתיחת פרופיל, <kbd>U</kbd> הסרה, <kbd>N</kbd>/<kbd>P</kbd> מעבר בין שורות.</div></div>

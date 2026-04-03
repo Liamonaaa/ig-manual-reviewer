@@ -259,6 +259,14 @@ p { margin: 0; }
   font-weight: 700;
 }
 
+.inline-info {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+  font-weight: 700;
+}
+
 .footer-strip, .filters-row { flex-wrap: wrap; }
 .filters-row { align-items: end; }
 .keyboard-shortcuts-hint, .pagination {

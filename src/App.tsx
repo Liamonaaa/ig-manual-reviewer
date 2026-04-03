@@ -4,14 +4,14 @@ import { CSVImporter } from './components/CSVImporter';
 import { DataTable } from './components/DataTable';
 import { useLocalStorage } from './hooks/useLocalStorage';
 import { exportToCSV } from './utils/csv';
-import { Status, UserRow } from './types';
+import { ImportResult, ImportSource, ImportSummary, Status, UserRow } from './types';
 import initialUsersData from './initialUsers.json';
 import './index.css';
 
 const defaultUsers = initialUsersData as UserRow[];
 const BOT_API_BASE_URL = 'http://127.0.0.1:5000';
 
-type SyncStateResponse = {
+type BotUsersResponse = {
   success: boolean;
   remainingCount?: number;
   remainingUsers?: string[];
@@ -27,9 +27,19 @@ function reconcileUsersWithRemaining(currentUsers: UserRow[], remainingUsers: st
   return currentUsers.filter((user) => remainingUsernameSet.has(normalizeUsername(user.username)));
 }
 
+function renderSummary(summary: ImportSummary | null): string | null {
+  if (!summary) {
+    return null;
+  }
+
+  return summary.details ? `${summary.label} | ${summary.details}` : summary.label;
+}
+
 export default function App() {
   const [users, setUsers] = useLocalStorage<UserRow[]>('ig-reviewer-data', defaultUsers);
   const [theme, setTheme] = useLocalStorage<'light' | 'dark'>('ig-reviewer-theme', 'dark');
+  const [importSource, setImportSource] = useLocalStorage<ImportSource>('ig-reviewer-import-source', 'seed');
+  const [importSummary, setImportSummary] = useLocalStorage<ImportSummary | null>('ig-reviewer-import-summary', null);
 
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<Status | 'all'>('all');
@@ -52,8 +62,8 @@ export default function App() {
   }, []);
 
   const isBotDatasetCompatible = useMemo(() => {
-    return users.every((user) => botManagedUsernames.has(normalizeUsername(user.username)));
-  }, [users, botManagedUsernames]);
+    return importSource === 'instagram-export' || users.every((user) => botManagedUsernames.has(normalizeUsername(user.username)));
+  }, [importSource, users, botManagedUsernames]);
 
   const filteredUsers = useMemo(() => {
     return users.filter((user) => {
@@ -82,6 +92,8 @@ export default function App() {
     return { total, pending, processed, percentage };
   }, [users]);
 
+  const importSummaryText = renderSummary(importSummary);
+
   const applySyncedUsers = (updatedUsers: UserRow[], removedCount: number) => {
     setUsers(updatedUsers);
 
@@ -95,6 +107,21 @@ export default function App() {
     if (removedCount > 0) {
       setSyncMessage(`Synced ${removedCount} completed accounts from the bot.`);
     }
+  };
+
+  const replaceBotUsers = async (importedUsers: UserRow[]) => {
+    const response = await fetch(`${BOT_API_BASE_URL}/api/replace-users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ usernames: importedUsers.map((user) => user.username) }),
+    });
+
+    const data = (await response.json()) as BotUsersResponse;
+    if (!response.ok || !data.success) {
+      throw new Error(data.error ?? `Bot list update failed with status ${response.status}`);
+    }
+
+    return data;
   };
 
   const syncWithBot = async (silent = false) => {
@@ -117,7 +144,7 @@ export default function App() {
         throw new Error(`Sync request failed with status ${response.status}`);
       }
 
-      const data = (await response.json()) as SyncStateResponse;
+      const data = (await response.json()) as BotUsersResponse;
       if (!data.success || !Array.isArray(data.remainingUsers)) {
         throw new Error(data.error ?? 'Bot returned an invalid sync payload.');
       }
@@ -141,6 +168,36 @@ export default function App() {
     }
   };
 
+  const handleImport = async (result: ImportResult) => {
+    setUsers(result.users);
+    setCurrentPage(1);
+    setActiveId(result.users[0]?.id ?? null);
+    setUnfollowQueue([]);
+    setSyncMessage(null);
+    setImportSummary(result.summary);
+    setImportSource(result.source);
+
+    if (result.source !== 'instagram-export') {
+      setHasAttemptedInitialSync(false);
+      return;
+    }
+
+    setHasAttemptedInitialSync(true);
+    setIsSyncing(true);
+
+    try {
+      const botState = await replaceBotUsers(result.users);
+      setSyncMessage(`Imported ${result.users.length} non-followers and synced ${botState.remainingCount ?? result.users.length} usernames to the bot.`);
+    } catch (error) {
+      console.error('Failed to sync imported Instagram export with the bot', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      setSyncMessage('Imported the Instagram export locally, but bot sync failed.');
+      alert(`Imported the Instagram export, but failed to update the bot list:\n${errorMessage}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   useEffect(() => {
     if (users.length === 0) {
       setHasAttemptedInitialSync(false);
@@ -153,7 +210,7 @@ export default function App() {
 
     setHasAttemptedInitialSync(true);
     void syncWithBot(true);
-  }, [users.length, hasAttemptedInitialSync, isBotDatasetCompatible]);
+  }, [users, importSource, hasAttemptedInitialSync, isBotDatasetCompatible]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -281,6 +338,8 @@ export default function App() {
       setUsers([]);
       setActiveId(null);
       setSyncMessage(null);
+      setImportSummary(null);
+      setImportSource('seed');
       setHasAttemptedInitialSync(false);
     }
   };
@@ -318,14 +377,15 @@ export default function App() {
 
       {users.length === 0 ? (
         <main className="app-main center-content">
-          <CSVImporter
-            onImport={(data) => {
-              setUsers(data);
-              setCurrentPage(1);
-              setSyncMessage(null);
-              setHasAttemptedInitialSync(false);
-            }}
-          />
+          <div>
+            <CSVImporter onImport={(result) => void handleImport(result)} />
+            {(importSummaryText || syncMessage) && (
+              <div className="keyboard-shortcuts-hint" style={{ marginTop: '1rem' }}>
+                {importSummaryText && <div><strong>Import Summary:</strong> {importSummaryText}</div>}
+                {syncMessage && <div style={{ marginTop: importSummaryText ? '0.5rem' : 0 }}><strong>Bot Sync:</strong> {syncMessage}</div>}
+              </div>
+            )}
+          </div>
         </main>
       ) : (
         <main className="app-main dashboard">
@@ -338,12 +398,6 @@ export default function App() {
               <span className="stat-value text-warning">{stats.pending}</span>
               <span className="stat-label">Pending</span>
             </div>
-            {syncMessage && (
-              <div className="stat-card">
-                <span className="stat-value">{stats.total}</span>
-                <span className="stat-label">{syncMessage}</span>
-              </div>
-            )}
 
             <div className="table-actions" style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
               <button className="primary-button" onClick={() => bulkOpenNext(batchSize)} disabled={paginatedUsers.length === 0}>
@@ -359,6 +413,13 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {(importSummaryText || syncMessage) && (
+            <div className="keyboard-shortcuts-hint" style={{ marginBottom: '1.5rem' }}>
+              {importSummaryText && <div><strong>Import Summary:</strong> {importSummaryText}</div>}
+              {syncMessage && <div style={{ marginTop: importSummaryText ? '0.5rem' : 0 }}><strong>Bot Sync:</strong> {syncMessage}</div>}
+            </div>
+          )}
 
           <div className="filters-bar">
             <input

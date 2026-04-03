@@ -1,10 +1,10 @@
-import React, {useRef} from 'react';
+import React, { useRef } from 'react';
 import { UploadCloud } from 'lucide-react';
-import { parseCSVFile } from '../utils/csv';
-import { UserRow } from '../types';
+import { ImportResult } from '../types';
+import { parseImportFile } from '../utils/import-file';
 
 interface Props {
-  onImport: (users: UserRow[]) => void;
+  onImport: (result: ImportResult) => void;
 }
 
 export const CSVImporter: React.FC<Props> = ({ onImport }) => {
@@ -15,10 +15,10 @@ export const CSVImporter: React.FC<Props> = ({ onImport }) => {
     if (!file) return;
 
     try {
-      const users = await parseCSVFile(file);
-      onImport(users);
+      const result = await parseImportFile(file);
+      onImport(result);
     } catch (err) {
-      alert('Failed to parse CSV file.');
+      alert('Failed to parse the selected file. Use a CSV or an Instagram export ZIP.');
       console.error(err);
     }
   };
@@ -30,12 +30,12 @@ export const CSVImporter: React.FC<Props> = ({ onImport }) => {
         onClick={() => fileInputRef.current?.click()}
       >
         <UploadCloud size={48} className="importer-icon" />
-        <h2>Import CSV</h2>
-        <p>Drop your CSV file here, or click to browse.</p>
-        <p className="importer-hint">Required column: <strong>username</strong></p>
+        <h2>Import CSV or Instagram ZIP</h2>
+        <p>Select a CSV with usernames or a ZIP exported directly from Instagram.</p>
+        <p className="importer-hint">Instagram ZIP support automatically calculates who you follow that does not follow you back.</p>
         <input 
           type="file" 
-          accept=".csv" 
+          accept=".csv,.zip,application/zip" 
           ref={fileInputRef} 
           onChange={handleFileChange} 
           style={{ display: 'none' }} 

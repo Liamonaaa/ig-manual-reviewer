@@ -24,8 +24,7 @@ import { ImportResult, ImportSource, ImportSummary, UserRow } from './types';
 import './index.css';
 
 const LOCAL_BOT_API_BASE_URL = 'http://127.0.0.1:5000';
-const importMetaEnv = import.meta as ImportMeta & { env?: Record<string, string | undefined> };
-const CONFIGURED_BOT_API_BASE_URL = importMetaEnv.env?.VITE_BOT_API_BASE_URL?.trim();
+const CONFIGURED_BOT_API_BASE_URL = import.meta.env.VITE_BOT_API_BASE_URL?.trim();
 const DEFAULT_BOT_API_BASE_URL = CONFIGURED_BOT_API_BASE_URL || LOCAL_BOT_API_BASE_URL;
 const ACTIVE_QUEUE_POLL_INTERVAL_MS = 550;
 const IDLE_QUEUE_POLL_INTERVAL_MS = 2500;

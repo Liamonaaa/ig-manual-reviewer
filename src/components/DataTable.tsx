@@ -91,14 +91,14 @@ export const DataTable: React.FC<Props> = ({
                   ? 'טוען...'
                   : isProcessingThisUser
                     ? 'הבוט עובד עכשיו'
-                    : 'ממתין לטיפול';
+                    : 'מוכן להסרה';
               const detailText = kind === 'failed'
-                ? user.failureReason || 'המשתמש הזה עדיין לא סומן כהוסר.'
+                ? user.failureReason || 'הבוט לא הצליח להסיר את המשתמש הזה.'
                 : isBusy
-                  ? 'מעדכן את הרשימה...'
+                  ? 'הבקשה נשלחה לבוט. ממתין לאישור...'
                   : isProcessingThisUser
                     ? 'הסרה אוטומטית פועלת כרגע ברקע.'
-                    : 'פתח את הפרופיל, הסר ידנית באינסטגרם, ואז סמן שהוסר.';
+                    : 'לחץ על הכפתור כדי להסיר עוקב בצורה ידנית.';
 
               return (
                 <tr
@@ -110,7 +110,7 @@ export const DataTable: React.FC<Props> = ({
                     <div className="user-meta">
                       <span className="username">@{user.username}</span>
                       <span className="user-subline">
-                        {kind === 'failed' ? 'עדיין לא סומן כהוסר' : 'פרופיל אינסטגרם'}
+                        {kind === 'failed' ? 'הועבר לרשימת כשלונות' : 'פרופיל אינסטגרם'}
                       </span>
                     </div>
                     <div className="mini-actions">

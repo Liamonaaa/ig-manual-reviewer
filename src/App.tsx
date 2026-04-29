@@ -97,6 +97,9 @@ const createRowId = () =>
 
 const normalizeUsername = (username: string) => username.trim().replace(/^@+/, '').toLowerCase();
 const normalizeBaseUrl = (url: string) => (url.trim() || DEFAULT_BOT_API_BASE_URL).replace(/\/+$/, '');
+const isLoopbackUrl = (url: string) => /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/i.test(url);
+const isNetworkFetchError = (error: unknown) =>
+  error instanceof TypeError && /failed to fetch|networkerror|load failed|fetch/i.test(error.message);
 const renderSummary = (summary: ImportSummary | null) => (summary ? (summary.details ? `${summary.label} | ${summary.details}` : summary.label) : null);
 const getActiveId = (rows: UserRow[]) => rows.find((user) => user.status === 'pending')?.id ?? rows[0]?.id ?? null;
 const normalizeUsers = (rows: UserRow[]): UserRow[] =>
@@ -226,6 +229,17 @@ export default function App() {
   }, [queueState.isProcessing, queueState.currentUsername]);
 
   const buildApiUrl = (path: string, baseUrl = normalizedBotBaseUrl) => `${baseUrl}${path}`;
+  const getBotErrorMessage = (error: unknown, baseUrl = normalizedBotBaseUrl) => {
+    if (!isNetworkFetchError(error)) {
+      return error instanceof Error ? error.message : 'שגיאה לא ידועה';
+    }
+
+    if (isLoopbackUrl(baseUrl)) {
+      return `לא הצלחתי להגיע לשרת הבוט ב־${baseUrl}. צריך להריץ את הבוט במחשב הזה: להיכנס לתיקיית bot ולהפעיל start-bot.bat.`;
+    }
+
+    return `לא הצלחתי להגיע לשרת הבוט ב־${baseUrl}. בדוק שהכתובת נכונה, שהשרת פעיל, ושיש לו CORS/HTTPS מתאים.`;
+  };
 
   const saveWorkspaceSnapshot = (instagramUsername: string, nextUsers: UserRow[], nextSource = importSource, nextSummary = importSummary) =>
     setSavedWorkspaces((current) => {
@@ -387,9 +401,12 @@ export default function App() {
       applyBotState(data, { reconcile, allowRestore: true, silent });
       if (!silent && data.lastError) setNotice({ tone: 'danger', text: data.lastError });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+      const message = getBotErrorMessage(error, baseUrl);
       setAuthState((current) => ({ ...current, serverReachable: false, error: message }));
-      if (!silent) setNotice({ tone: 'danger', text: `לא הצלחתי להגיע לבוט: ${message}` });
+      if (!silent) {
+        setShowConnectionSettings(true);
+        setNotice({ tone: 'danger', text: `לא הצלחתי להגיע לבוט: ${message}` });
+      }
     } finally {
       if (!silent) setIsSyncing(false);
     }
@@ -466,7 +483,7 @@ export default function App() {
           await syncPendingUsersToBot(restoredUsers);
           setNotice({ tone: 'success', text: `התחברת כ־@${instagramUsername}. ההתקדמות שלך חזרה אוטומטית.` });
         } catch (syncError) {
-          const syncMessage = syncError instanceof Error ? syncError.message : 'שגיאה לא ידועה';
+          const syncMessage = getBotErrorMessage(syncError);
           setNotice({ tone: 'danger', text: `התחברת כ־@${instagramUsername}, אבל הסנכרון לבוט נכשל: ${syncMessage}` });
         }
       } else {
@@ -474,8 +491,9 @@ export default function App() {
         setNotice({ tone: 'success', text: `התחברת כ־@${instagramUsername}.` });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+      const message = getBotErrorMessage(error);
       setAuthState({ authenticated: false, instagramUsername: null, serverReachable: false, error: message });
+      if (isNetworkFetchError(error)) setShowConnectionSettings(true);
       setNotice({ tone: 'danger', text: `ההתחברות נכשלה: ${message}` });
     } finally {
       setIsAuthBusy(false);
@@ -508,7 +526,7 @@ export default function App() {
       setLoginUsername(disconnectedUser ?? '');
       setNotice({ tone: 'info', text: disconnectedUser ? `התנתקת מ־@${disconnectedUser}. ההתקדמות נשמרה ותשוחזר כשתתחבר שוב.` : 'התנתקת.' });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+      const message = getBotErrorMessage(error);
       setNotice({ tone: 'danger', text: `לא הצלחתי להתנתק: ${message}` });
     } finally {
       setIsAuthBusy(false);
@@ -547,7 +565,7 @@ export default function App() {
       await syncPendingUsersToBot(nextUsers);
       setNotice({ tone: 'success', text: `נטענו ${nextUsers.length} חשבונות והם סונכרנו לבוט.` });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+      const message = getBotErrorMessage(error);
       setNotice({ tone: 'danger', text: `הקובץ נטען, אבל הסנכרון לבוט נכשל: ${message}` });
     } finally {
       setIsImporting(false);
@@ -567,7 +585,7 @@ export default function App() {
       setQueueAutoRun(true);
       setNotice({ tone: 'success', text: 'התור האוטומטי התחיל לעבוד ברקע במצב מהיר.' });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+      const message = getBotErrorMessage(error);
       setQueueAutoRun(false);
       setNotice({ tone: 'danger', text: `לא הצלחתי להפעיל את התור: ${message}` });
     } finally {
@@ -595,7 +613,7 @@ export default function App() {
       applyBotState(data, { reconcile: false, allowRestore: false, silent: true });
       setNotice({ tone: 'info', text: 'נשלחה בקשת עצירה. הפעולה הנוכחית תסתיים ואז התור ייעצר.' });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+      const message = getBotErrorMessage(error);
       setNotice({ tone: 'danger', text: `לא הצלחתי לעצור את התור: ${message}` });
     } finally {
       setIsQueueBusy(false);
@@ -624,7 +642,7 @@ export default function App() {
       applyBotState(data, { reconcile: false, allowRestore: false, silent: true });
       setNotice({ tone: 'success', text: `העוקב של @${user.username} הוסר בהצלחה.` });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+      const message = getBotErrorMessage(error);
       const { nextUsers: nextUsersSnapshot } = movePendingUserToFailed(user.username, message);
       try { await syncPendingUsersToBot(nextUsersSnapshot); } catch {}
       setNotice({ tone: 'danger', text: `לא הצלחתי להסיר את @${user.username}. המשתמש עבר לעמודת "לא הוסר".` });
@@ -690,7 +708,7 @@ export default function App() {
           setNotice({ tone: 'info', text: `@${failedUsername} הועבר ל"לא הוסר". לא נשארו משתמשים נוספים בתור.` });
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
+        const message = getBotErrorMessage(error);
         setQueueAutoRun(false);
         setNotice({ tone: 'danger', text: `@${failedUsername} הועבר ל"לא הוסר", אבל ההמשך האוטומטי נכשל: ${message}` });
       } finally {
@@ -777,6 +795,7 @@ export default function App() {
           <button className="ghost-button" onClick={() => void fetchBotState(false, false)} disabled={isSyncing}><RefreshCw size={16} className={isSyncing ? 'spin' : ''} /> בדיקת חיבור</button>
         </div>
       </div>
+      <p className="panel-copy">אם הכתובת היא 127.0.0.1, צריך להריץ את הבוט באותו מחשב שבו פותחים את האתר: תיקיית bot ואז start-bot.bat.</p>
     </section>
   );
 

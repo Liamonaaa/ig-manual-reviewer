@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "bot:install": "py -m pip install -r bot/requirements.txt",
+    "bot": "py bot/server.py",
     "build": "tsc -b && vite build",
     "preview": "vite preview"
   },

@@ -51,6 +51,10 @@ class ClientSessionContext:
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 
+class VerificationCodeRequired(ValueError):
+    pass
+
+
 def create_instagram_client() -> Client:
     client = Client()
     client.delay_range = [0, 0]
@@ -338,7 +342,12 @@ def record_failed_user(context: ClientSessionContext, username: str, reason: str
     context.last_active_at = time.time()
 
 
-def login_context(context: ClientSessionContext, instagram_username: str, instagram_password: str) -> None:
+def login_context(
+    context: ClientSessionContext,
+    instagram_username: str,
+    instagram_password: str,
+    instagram_verification_code: str = "",
+) -> None:
     sanitized_username = sanitize_username(instagram_username)
     if not sanitized_username:
         raise ValueError("Instagram username is required")
@@ -348,11 +357,25 @@ def login_context(context: ClientSessionContext, instagram_username: str, instag
 
     session_path = instagram_session_path(sanitized_username)
     client = create_instagram_client()
+    verification_code = re.sub(r"\s+", "", instagram_verification_code or "")
+
+    def challenge_code_handler(username, choice=None):
+        if verification_code:
+            return verification_code
+
+        channel = "מייל או SMS"
+        if choice:
+            channel = str(choice)
+        raise VerificationCodeRequired(
+            f"Instagram requires a verification code for @{username}. Check {channel} or approve the login in Instagram, then enter the code in the site."
+        )
+
+    client.challenge_code_handler = challenge_code_handler
 
     if os.path.exists(session_path):
         client.load_settings(session_path)
 
-    client.login(sanitized_username, instagram_password)
+    client.login(sanitized_username, instagram_password, verification_code=verification_code)
     client.get_timeline_feed()
     client.dump_settings(session_path)
 
@@ -602,6 +625,7 @@ def auth_login():
 
     instagram_username = str(payload.get("instagramUsername", "")).strip()
     instagram_password = str(payload.get("instagramPassword", ""))
+    instagram_verification_code = str(payload.get("instagramVerificationCode", ""))
     context = get_or_create_context(client_session_id)
 
     try:
@@ -610,8 +634,10 @@ def auth_login():
             if mutation_error:
                 return jsonify(mutation_error[0]), mutation_error[1]
 
-            login_context(context, instagram_username, instagram_password)
+            login_context(context, instagram_username, instagram_password, instagram_verification_code)
             return jsonify(serialize_queue_state(context))
+    except VerificationCodeRequired as error:
+        return jsonify({"success": False, "challengeRequired": True, "error": str(error)}), 401
     except ValueError as error:
         return jsonify({"success": False, "error": str(error)}), 400
     except Exception as error:

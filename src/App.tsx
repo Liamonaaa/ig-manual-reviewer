@@ -44,6 +44,7 @@ type BotUsersResponse = {
   lastError?: string | null;
   processedCount?: number;
   totalLoadedCount?: number;
+  challengeRequired?: boolean;
 };
 
 type AuthState = {
@@ -167,6 +168,7 @@ export default function App() {
   const [notice, setNotice] = useState<NoticeState>(null);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [loginVerificationCode, setLoginVerificationCode] = useState('');
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [isQueueBusy, setIsQueueBusy] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -471,7 +473,12 @@ export default function App() {
       const response = await fetch(buildApiUrl('/api/auth/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientSessionId, instagramUsername: loginUsername, instagramPassword: loginPassword }),
+        body: JSON.stringify({
+          clientSessionId,
+          instagramUsername: loginUsername,
+          instagramPassword: loginPassword,
+          instagramVerificationCode: loginVerificationCode,
+        }),
       });
       const data = (await response.json()) as BotUsersResponse;
       if (!response.ok || !data.success) throw new Error(data.error ?? `ההתחברות נכשלה עם קוד ${response.status}`);
@@ -481,6 +488,7 @@ export default function App() {
 
       setLoginUsername(instagramUsername);
       setLoginPassword('');
+      setLoginVerificationCode('');
 
       if (snapshot) {
         const restoredUsers = normalizeUsers(snapshot.users);
@@ -509,6 +517,10 @@ export default function App() {
       const message = getBotErrorMessage(error);
       setAuthState({ authenticated: false, instagramUsername: null, serverReachable: false, error: message });
       if (isNetworkFetchError(error)) setShowConnectionSettings(true);
+      if (/verification code|security code|challenge|required|two[-_\s]?factor|2fa/i.test(message)) {
+        setNotice({ tone: 'danger', text: 'אינסטגרם דורשת אימות נוסף. הכנס את הקוד שקיבלת במייל/SMS או אשר באפליקציה ואז לחץ שוב התחברות.' });
+        return;
+      }
       setNotice({ tone: 'danger', text: `ההתחברות נכשלה: ${message}` });
     } finally {
       setIsAuthBusy(false);
@@ -852,6 +864,7 @@ export default function App() {
               <div className="form-stack">
                 <label className="field-group"><span>שם משתמש</span><input type="text" value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} className="field-input" placeholder="your_instagram_username" /></label>
                 <label className="field-group"><span>סיסמה</span><input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} className="field-input" placeholder="הכנס סיסמה" /></label>
+                <label className="field-group"><span>קוד אימות אם אינסטגרם ביקשה</span><input type="text" inputMode="numeric" autoComplete="one-time-code" value={loginVerificationCode} onChange={(event) => setLoginVerificationCode(event.target.value)} className="field-input" placeholder="לדוגמה 123456" /></label>
                 {loginWorkspaceHint && <div className="saved-hint">נמצאה התקדמות שמורה: {loginWorkspaceHint.users.filter((user) => user.status === 'pending').length} ממתינים, {loginWorkspaceHint.users.filter((user) => user.status === 'failed').length} ב"לא הוסר". שמירה אחרונה: {formatSavedAt(loginWorkspaceHint.savedAt)}.</div>}
                 <button className="primary-button jumbo-button" onClick={() => void handleLogin()} disabled={isAuthBusy}>{isAuthBusy ? <LoaderCircle size={18} className="spin" /> : <LogIn size={18} />}{isAuthBusy ? 'מתחבר...' : 'התחברות לאינסטגרם'}</button>
                 <button className="ghost-button" onClick={() => setShowConnectionSettings((current) => !current)}><Settings2 size={16} /> {showConnectionSettings ? 'הסתרת הגדרות' : 'הגדרות בוט'}</button>

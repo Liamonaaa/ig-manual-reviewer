@@ -107,7 +107,7 @@ const normalizeUsers = (rows: UserRow[]): UserRow[] =>
     notes: user.notes || '',
     category: user.category || '',
     originalIndex: typeof user.originalIndex === 'number' ? user.originalIndex : index,
-    failureReason: user.failureReason || (user.status === 'failed' ? user.notes || 'הבוט לא הצליח להסיר.' : ''),
+    failureReason: user.failureReason || (user.status === 'failed' ? user.notes || 'המשתמש עדיין לא סומן כהוסר.' : ''),
     lastAttemptAt: user.lastAttemptAt || '',
   }));
 const buildPendingRows = (usernames: string[]) =>
@@ -159,7 +159,6 @@ export default function App() {
   const [queueState, setQueueState] = useState<QueueState>(emptyQueueState);
   const [notice, setNotice] = useState<NoticeState>(null);
   const [loginUsername, setLoginUsername] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [isQueueBusy, setIsQueueBusy] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -196,6 +195,7 @@ export default function App() {
   const currentWorkspaceKey = authState.instagramUsername ? normalizeUsername(authState.instagramUsername) : '';
   const loginWorkspaceHint = loginUsername ? savedWorkspaces[normalizeUsername(loginUsername)] ?? null : null;
   const hasWorkspaceData = users.length > 0 || importSource !== 'none' || Boolean(importSummary);
+  const isBotConnected = authState.authenticated && authState.serverReachable;
   const usersRef = useRef(users);
   const activeIdRef = useRef(activeId);
   const workspaceKeyRef = useRef(currentWorkspaceKey);
@@ -428,27 +428,26 @@ export default function App() {
   };
 
   const handleLogin = async () => {
-    if (!loginUsername.trim() || !loginPassword) {
-      setNotice({ tone: 'danger', text: 'צריך למלא שם משתמש וסיסמה.' });
+    const instagramUsername = normalizeUsername(loginUsername);
+
+    if (!instagramUsername) {
+      setNotice({ tone: 'danger', text: 'צריך למלא שם משתמש.' });
       return;
     }
 
     setIsAuthBusy(true);
 
     try {
-      const response = await fetch(buildApiUrl('/api/auth/login'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientSessionId, instagramUsername: loginUsername, instagramPassword: loginPassword }),
-      });
-      const data = (await response.json()) as BotUsersResponse;
-      if (!response.ok || !data.success) throw new Error(data.error ?? `ההתחברות נכשלה עם קוד ${response.status}`);
-
-      const instagramUsername = normalizeUsername(data.instagramUsername ?? loginUsername);
       const snapshot = savedWorkspaces[instagramUsername];
 
       setLoginUsername(instagramUsername);
-      setLoginPassword('');
+      setAuthState({
+        authenticated: true,
+        instagramUsername,
+        serverReachable: false,
+        error: null,
+      });
+      setQueueState(emptyQueueState);
 
       if (snapshot) {
         const restoredUsers = normalizeUsers(snapshot.users);
@@ -461,22 +460,15 @@ export default function App() {
           setActiveId(getActiveId(restoredUsers));
           setShowImportPanel(false);
         });
-        applyBotState({ ...data, instagramUsername }, { reconcile: false, allowRestore: false, silent: true });
-        try {
-          await syncPendingUsersToBot(restoredUsers);
-          setNotice({ tone: 'success', text: `התחברת כ־@${instagramUsername}. ההתקדמות שלך חזרה אוטומטית.` });
-        } catch (syncError) {
-          const syncMessage = syncError instanceof Error ? syncError.message : 'שגיאה לא ידועה';
-          setNotice({ tone: 'danger', text: `התחברת כ־@${instagramUsername}, אבל הסנכרון לבוט נכשל: ${syncMessage}` });
-        }
+        setNotice({ tone: 'success', text: `נפתחה סביבת העבודה של @${instagramUsername}. ההתקדמות שלך חזרה אוטומטית.` });
       } else {
-        applyBotState({ ...data, instagramUsername }, { reconcile: false, allowRestore: true, silent: true });
-        setNotice({ tone: 'success', text: `התחברת כ־@${instagramUsername}.` });
+        clearVisibleWorkspace();
+        setNotice({ tone: 'success', text: `נפתחה סביבת עבודה עבור @${instagramUsername}.` });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
       setAuthState({ authenticated: false, instagramUsername: null, serverReachable: false, error: message });
-      setNotice({ tone: 'danger', text: `ההתחברות נכשלה: ${message}` });
+      setNotice({ tone: 'danger', text: `לא הצלחתי לפתוח סביבת עבודה: ${message}` });
     } finally {
       setIsAuthBusy(false);
     }
@@ -488,31 +480,16 @@ export default function App() {
       return;
     }
 
+    const disconnectedUser = authState.instagramUsername;
     setIsAuthBusy(true);
-
-    try {
-      const response = await fetch(buildApiUrl('/api/auth/logout'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientSessionId }),
-      });
-      const data = (await response.json()) as BotUsersResponse;
-      if (!response.ok && data.error) throw new Error(data.error);
-
-      const disconnectedUser = authState.instagramUsername;
-      clearVisibleWorkspace();
-      setAuthState(emptyAuthState);
-      setQueueState(emptyQueueState);
-      setClientSessionId(createClientSessionId());
-      setShowConnectionSettings(false);
-      setLoginUsername(disconnectedUser ?? '');
-      setNotice({ tone: 'info', text: disconnectedUser ? `התנתקת מ־@${disconnectedUser}. ההתקדמות נשמרה ותשוחזר כשתתחבר שוב.` : 'התנתקת.' });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'שגיאה לא ידועה';
-      setNotice({ tone: 'danger', text: `לא הצלחתי להתנתק: ${message}` });
-    } finally {
-      setIsAuthBusy(false);
-    }
+    clearVisibleWorkspace();
+    setAuthState(emptyAuthState);
+    setQueueState(emptyQueueState);
+    setClientSessionId(createClientSessionId());
+    setShowConnectionSettings(false);
+    setLoginUsername(disconnectedUser ?? '');
+    setNotice({ tone: 'info', text: disconnectedUser ? `התנתקת מ־@${disconnectedUser}. ההתקדמות נשמרה ותשוחזר כשתתחבר שוב.` : 'התנתקת.' });
+    setIsAuthBusy(false);
   };
 
   const handleImport = async (result: ImportResult) => {
@@ -543,6 +520,12 @@ export default function App() {
     });
     saveWorkspaceSnapshot(currentWorkspaceKey, nextUsers, result.source, result.summary);
 
+    if (!isBotConnected) {
+      setNotice({ tone: 'success', text: `נטענו ${nextUsers.length} חשבונות. ההתקדמות נשמרת בדפדפן הזה.` });
+      setIsImporting(false);
+      return;
+    }
+
     try {
       await syncPendingUsersToBot(nextUsers);
       setNotice({ tone: 'success', text: `נטענו ${nextUsers.length} חשבונות והם סונכרנו לבוט.` });
@@ -556,6 +539,7 @@ export default function App() {
 
   const handleStartQueue = async () => {
     if (!authState.authenticated) return setNotice({ tone: 'danger', text: 'צריך להתחבר קודם לאינסטגרם.' });
+    if (!isBotConnected) return setNotice({ tone: 'info', text: 'האתר פועל במצב ידני. אפשר לפתוח פרופילים ולסמן משתמשים כהוסרו בלי שרת בוט.' });
     if (pendingUsers.length === 0) return setNotice({ tone: 'info', text: 'אין כרגע משתמשים שממתינים להסרה.' });
     if (isQueueRecovering) return setNotice({ tone: 'info', text: 'התור כבר מתאושש מתקלה וממשיך אוטומטית.' });
 
@@ -608,6 +592,12 @@ export default function App() {
     if (queueState.isProcessing || isQueueRecovering) return setNotice({ tone: 'danger', text: 'עצור קודם את התור האוטומטי ואז נסה שוב.' });
     if (manualActionUserId) return;
 
+    if (!isBotConnected) {
+      persistUsersSnapshot(usersRef.current.filter((currentUser) => currentUser.id !== id));
+      setNotice({ tone: 'success', text: `@${user.username} סומן כהוסר מהרשימה.` });
+      return;
+    }
+
     setManualActionUserId(id);
     setNotice({ tone: 'info', text: `שולח לבוט בקשה להסיר את @${user.username}...` });
 
@@ -641,7 +631,9 @@ export default function App() {
     setQueueAutoRun(false);
     queueAutoRunRef.current = false;
     lastRecoveredFailureKeyRef.current = null;
-    try { await syncPendingUsersToBot([]); } catch {}
+    if (isBotConnected) {
+      try { await syncPendingUsersToBot([]); } catch {}
+    }
 
     setSavedWorkspaces((current) => {
       const next = { ...current };
@@ -718,18 +710,20 @@ export default function App() {
     setNotice({ tone: 'success', text: 'התור האוטומטי הסתיים בהצלחה.' });
   }, [isQueueRecovering, pendingUsers.length, queueAutoRun, queueState.isProcessing, queueState.lastError]);
 
-  useEffect(() => { void fetchBotState(true, false); }, [clientSessionId, normalizedBotBaseUrl]);
+  useEffect(() => {
+    if (showConnectionSettings) void fetchBotState(true, false);
+  }, [clientSessionId, normalizedBotBaseUrl, showConnectionSettings]);
 
   useEffect(() => {
-    if (!authState.authenticated && users.length === 0 && queueState.totalLoadedCount === 0) return;
+    if (!isBotConnected) return;
     const intervalId = window.setInterval(() => {
       void fetchBotState(true, queueState.isProcessing || queueState.totalLoadedCount > 0 || Boolean(queueState.lastProcessedUsername));
     }, queueState.isProcessing || isQueueRecovering ? ACTIVE_QUEUE_POLL_INTERVAL_MS : IDLE_QUEUE_POLL_INTERVAL_MS);
     return () => window.clearInterval(intervalId);
   }, [
-    authState.authenticated,
     clientSessionId,
     isQueueRecovering,
+    isBotConnected,
     normalizedBotBaseUrl,
     queueState.isProcessing,
     queueState.lastProcessedUsername,
@@ -755,7 +749,7 @@ export default function App() {
 
   const statusStrip = (
     <div className="status-strip">
-      <span className={`status-pill ${authState.serverReachable ? 'status-online' : 'status-offline'}`}>{authState.serverReachable ? 'הבוט זמין' : 'הבוט לא זמין'}</span>
+      <span className={`status-pill ${isBotConnected ? 'status-online' : 'status-idle'}`}>{isBotConnected ? 'בוט מחובר' : 'מצב ידני'}</span>
       <span className={`status-pill ${authState.authenticated ? 'status-online' : 'status-idle'}`}>{authState.authenticated ? `מחובר כ־@${authState.instagramUsername}` : 'לא מחובר'}</span>
       {(queueState.isProcessing || queueAutoRun || isQueueRecovering) && (
         <span className={`status-pill ${isQueueRecovering ? 'status-offline' : 'status-online'}`}>
@@ -787,8 +781,10 @@ export default function App() {
           <div className="brand-block"><div className="brand-mark">IG</div><div><p className="eyebrow">מערכת הסרת עוקבים</p><h1>עברית מלאה, פעולה אחת ברורה, והתקדמות שנשמרת</h1></div></div>
           <div className="topbar-actions">
             {authState.authenticated && <>
-              <button className="ghost-button" onClick={() => setShowConnectionSettings((current) => !current)}><Settings2 size={16} /> הגדרות</button>
-              <button className="ghost-button" onClick={() => void fetchBotState(false, true)} disabled={isSyncing}><RefreshCw size={16} className={isSyncing ? 'spin' : ''} /> {isSyncing ? 'מסנכרן...' : 'סנכרון'}</button>
+              {isBotConnected && <>
+                <button className="ghost-button" onClick={() => setShowConnectionSettings((current) => !current)}><Settings2 size={16} /> הגדרות</button>
+                <button className="ghost-button" onClick={() => void fetchBotState(false, true)} disabled={isSyncing}><RefreshCw size={16} className={isSyncing ? 'spin' : ''} /> {isSyncing ? 'מסנכרן...' : 'סנכרון'}</button>
+              </>}
               <button className="ghost-button danger-text" onClick={() => void handleLogout()} disabled={isAuthBusy || isQueueRecovering}><LogOut size={16} /> התנתקות</button>
             </>}
             <button className="icon-button theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
@@ -801,41 +797,38 @@ export default function App() {
           <main className="setup-grid">
             <section className="glass-card hero-card">
               <p className="eyebrow">איך זה עובד</p>
-              <h2>מתחברים, מעלים קובץ, ומסירים עוקבים בלי כפתורים מיותרים.</h2>
+              <h2>פותחים סביבת עבודה, מעלים קובץ, ומסמנים ידנית את מי שכבר הסרת.</h2>
               <ul className="bullet-list">
-                <li>כל המשתמשים נשמרים לפי חשבון אינסטגרם.</li>
-                <li>אם הסרה נכשלת, המשתמש עובר ישר לעמודת "לא הוסר".</li>
-                <li>בלחיצה על "הסר עוקב" רואים טעינה ואז הצלחה או כשלון.</li>
+                <li>אין צורך בשרת מקומי או בסיסמה כדי להתחיל.</li>
+                <li>כל ההתקדמות נשמרת לפי שם המשתמש שבחרת.</li>
+                <li>פותחים פרופיל באינסטגרם, מבצעים הסרה ידנית, ואז מסמנים שהוסר.</li>
               </ul>
               {statusStrip}
             </section>
 
             <section className="glass-card auth-card">
-              <div className="panel-header"><div><p className="eyebrow">התחברות</p><h3>כניסה לאינסטגרם</h3></div><span className={`tiny-badge ${authState.serverReachable ? 'tiny-badge-success' : 'tiny-badge-idle'}`}>{authState.serverReachable ? 'בוט מחובר' : 'עוד לא נבדק'}</span></div>
+              <div className="panel-header"><div><p className="eyebrow">כניסה</p><h3>פתיחת סביבת עבודה</h3></div><span className="tiny-badge tiny-badge-idle">מצב ידני</span></div>
               <div className="form-stack">
                 <label className="field-group"><span>שם משתמש</span><input type="text" value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} className="field-input" placeholder="your_instagram_username" /></label>
-                <label className="field-group"><span>סיסמה</span><input type="password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} className="field-input" placeholder="הכנס סיסמה" /></label>
                 {loginWorkspaceHint && <div className="saved-hint">נמצאה התקדמות שמורה: {loginWorkspaceHint.users.filter((user) => user.status === 'pending').length} ממתינים, {loginWorkspaceHint.users.filter((user) => user.status === 'failed').length} ב"לא הוסר". שמירה אחרונה: {formatSavedAt(loginWorkspaceHint.savedAt)}.</div>}
-                <button className="primary-button jumbo-button" onClick={() => void handleLogin()} disabled={isAuthBusy}>{isAuthBusy ? <LoaderCircle size={18} className="spin" /> : <LogIn size={18} />}{isAuthBusy ? 'מתחבר...' : 'התחברות לאינסטגרם'}</button>
-                <button className="ghost-button" onClick={() => setShowConnectionSettings((current) => !current)}><Settings2 size={16} /> {showConnectionSettings ? 'הסתרת הגדרות' : 'הגדרות בוט'}</button>
+                <button className="primary-button jumbo-button" onClick={() => void handleLogin()} disabled={isAuthBusy}>{isAuthBusy ? <LoaderCircle size={18} className="spin" /> : <LogIn size={18} />}{isAuthBusy ? 'פותח...' : 'כניסה'}</button>
               </div>
-              {showConnectionSettings && settingsPanel}
             </section>
           </main>
         ) : !hasWorkspaceData ? (
           <main className="import-layout">
-            <section className="glass-card hero-card"><p className="eyebrow">שלב 2</p><h2>עכשיו מעלים את קובץ האינסטגרם</h2><p className="panel-copy">אתה מחובר כ־@{authState.instagramUsername}. ברגע שתעלה קובץ, הכל יישמר לחשבון הזה ויחזור בפעם הבאה.</p>{statusStrip}</section>
+            <section className="glass-card hero-card"><p className="eyebrow">שלב 2</p><h2>עכשיו מעלים את קובץ האינסטגרם</h2><p className="panel-copy">סביבת העבודה של @{authState.instagramUsername} פתוחה. ברגע שתעלה קובץ, הכל יישמר לשם הזה ויחזור בפעם הבאה.</p>{statusStrip}</section>
             {showConnectionSettings && settingsPanel}
             <section className="workspace-grid">
               <div className="glass-card"><div className="panel-header"><div><p className="eyebrow">ייבוא</p><h3>ZIP של אינסטגרם או CSV</h3></div></div><CSVImporter onImport={handleImport} disabled={isImporting || queueState.isProcessing || isQueueRecovering || Boolean(manualActionUserId)} /></div>
-              <aside className="glass-card side-card"><div className="panel-header"><div><p className="eyebrow">מה תקבל כאן</p><h3>מסך עבודה הרבה יותר נקי</h3></div></div><ul className="bullet-list"><li>רק רשימת ממתינים ורשימת "לא הוסר".</li><li>אין יותר Keep ו־Skip.</li><li>ההתקדמות חוזרת אוטומטית בחיבור הבא.</li></ul></aside>
+              <aside className="glass-card side-card"><div className="panel-header"><div><p className="eyebrow">מה תקבל כאן</p><h3>מסך עבודה הרבה יותר נקי</h3></div></div><ul className="bullet-list"><li>רשימת משתמשים שממתינים לטיפול.</li><li>פתיחת פרופיל מהירה וסימון אחרי הסרה ידנית.</li><li>ההתקדמות חוזרת אוטומטית בכניסה הבאה.</li></ul></aside>
             </section>
           </main>
         ) : (
           <main className="workspace-layout">
             <section className="glass-card hero-card">
-              <div className="hero-row"><div><p className="eyebrow">מרכז שליטה</p><h2>כפתור אחד להסרה, רשימה נפרדת לכשלונות, וכל ההתקדמות נשמרת</h2><p className="panel-copy">התור המהיר בודק מצב בתדירות גבוהה יותר, מעביר כשלונות ל"לא הוסר", וממשיך לבד למשתמש הבא.</p></div><div className="hero-actions"><button className="primary-button jumbo-button" onClick={() => void handleStartQueue()} disabled={queueState.isProcessing || isQueueBusy || isQueueRecovering || Boolean(manualActionUserId) || pendingUsers.length === 0}>{queueState.isProcessing || isQueueBusy || isQueueRecovering ? <LoaderCircle size={18} className="spin" /> : <Play size={18} />}{isQueueRecovering ? 'מתאושש וממשיך...' : queueState.isProcessing ? 'התור עובד עכשיו' : `הפעלת תור (${pendingUsers.length})`}</button><button className="secondary-button" onClick={() => void handleStopQueue()} disabled={(!queueState.isProcessing && !isQueueRecovering) || isQueueBusy}><Square size={16} /> עצירה</button></div></div>
-              <div className="progress-card"><div className="progress-head"><span>התקדמות הבוט</span><strong>{queueState.processedCount} / {queueProgressBase || 0}</strong></div><div className="progress-track"><div className="progress-fill" style={{ width: `${queueProgressPercent}%` }} /></div><div className="progress-foot"><span>{queueProgressPercent}% הושלם</span><span>{isQueueRecovering ? 'מזהה תקלה, מעביר לכשלונות וממשיך אוטומטית' : queueState.currentUsername ? `כרגע מטפל ב־@${queueState.currentUsername}` : queueState.lastProcessedUsername ? `האחרון שהושלם: @${queueState.lastProcessedUsername}` : 'ממתין לפעולה הבאה'}</span></div></div>
+              <div className="hero-row"><div><p className="eyebrow">מרכז עבודה</p><h2>פותחים פרופיל, מסירים ידנית, ומסמנים שהוסר מהרשימה</h2><p className="panel-copy">האתר עובד ישירות בדפדפן ושומר את ההתקדמות מקומית, לכן הוא יעבוד גם לחברים שפותחים אותו מ־GitHub Pages.</p></div>{isBotConnected && <div className="hero-actions"><button className="primary-button jumbo-button" onClick={() => void handleStartQueue()} disabled={queueState.isProcessing || isQueueBusy || isQueueRecovering || Boolean(manualActionUserId) || pendingUsers.length === 0}>{queueState.isProcessing || isQueueBusy || isQueueRecovering ? <LoaderCircle size={18} className="spin" /> : <Play size={18} />}{isQueueRecovering ? 'מתאושש וממשיך...' : queueState.isProcessing ? 'התור עובד עכשיו' : `הפעלת תור (${pendingUsers.length})`}</button><button className="secondary-button" onClick={() => void handleStopQueue()} disabled={(!queueState.isProcessing && !isQueueRecovering) || isQueueBusy}><Square size={16} /> עצירה</button></div>}</div>
+              {isBotConnected && <div className="progress-card"><div className="progress-head"><span>התקדמות הבוט</span><strong>{queueState.processedCount} / {queueProgressBase || 0}</strong></div><div className="progress-track"><div className="progress-fill" style={{ width: `${queueProgressPercent}%` }} /></div><div className="progress-foot"><span>{queueProgressPercent}% הושלם</span><span>{isQueueRecovering ? 'מזהה תקלה, מעביר לכשלונות וממשיך אוטומטית' : queueState.currentUsername ? `כרגע מטפל ב־@${queueState.currentUsername}` : queueState.lastProcessedUsername ? `האחרון שהושלם: @${queueState.lastProcessedUsername}` : 'ממתין לפעולה הבאה'}</span></div></div>}
               {statusStrip}
             </section>
 
@@ -843,7 +836,7 @@ export default function App() {
               <article className="summary-card"><Bot size={18} /><div><span className="summary-label">משתמש פעיל</span><strong>@{authState.instagramUsername}</strong></div></article>
               <article className="summary-card"><CheckCircle2 size={18} /><div><span className="summary-label">ממתינים להסרה</span><strong>{pendingUsers.length}</strong></div></article>
               <article className="summary-card danger-card"><AlertTriangle size={18} /><div><span className="summary-label">לא הוסר</span><strong>{failedUsers.length}</strong></div></article>
-              <article className="summary-card success-card"><Download size={18} /><div><span className="summary-label">הוסרו דרך הבוט</span><strong>{queueState.processedCount}</strong></div></article>
+              <article className="summary-card success-card"><Download size={18} /><div><span className="summary-label">{isBotConnected ? 'הוסרו דרך הבוט' : 'נשארו ברשימה'}</span><strong>{isBotConnected ? queueState.processedCount : users.length}</strong></div></article>
             </section>
 
             <section className="glass-card controls-card">
@@ -857,8 +850,8 @@ export default function App() {
             {showConnectionSettings && settingsPanel}
 
             <section className="workspace-grid">
-              <DataTable title="ממתינים להסרה" subtitle="כשלוחצים על הכפתור רואים טעינה, ואז הצלחה או מעבר אוטומטי ל-'לא הוסר'." kind="pending" users={paginatedPendingUsers} activeId={activeId} canAct={authState.authenticated && !queueState.isProcessing && !isQueueRecovering} busyUserId={manualActionUserId} currentProcessingUsername={queueState.currentUsername} emptyText="אין כרגע משתמשים שממתינים להסרה." actionLabel="הסר עוקב" actionBusyLabel="טוען..." onAction={(id) => void handleManualUnfollow(id)} onSetActive={setActiveId} />
-              <DataTable title="לא הוסר" subtitle="כאן נשמרים כל המשתמשים שהבוט לא הצליח להסיר, עם אפשרות לנסות שוב." kind="failed" users={filteredFailedUsers} activeId={activeId} canAct={authState.authenticated && !queueState.isProcessing && !isQueueRecovering} busyUserId={manualActionUserId} currentProcessingUsername={queueState.currentUsername} emptyText="עדיין אין משתמשים ב-'לא הוסר'." actionLabel="נסה שוב" actionBusyLabel="מנסה שוב..." onAction={(id) => void handleManualUnfollow(id)} onSetActive={setActiveId} />
+              <DataTable title="ממתינים להסרה" subtitle="פותחים את הפרופיל, מסירים ידנית באינסטגרם, ואז מסמנים שהוסר מהרשימה." kind="pending" users={paginatedPendingUsers} activeId={activeId} canAct={authState.authenticated && !queueState.isProcessing && !isQueueRecovering} busyUserId={manualActionUserId} currentProcessingUsername={queueState.currentUsername} emptyText="אין כרגע משתמשים שממתינים להסרה." actionLabel="סמן הוסר" actionBusyLabel="טוען..." onAction={(id) => void handleManualUnfollow(id)} onSetActive={setActiveId} />
+              <DataTable title="לא הוסר" subtitle="כאן נשמרים משתמשים שלא הוסרו, עם אפשרות לסמן אותם כהוסרו אחרי טיפול ידני." kind="failed" users={filteredFailedUsers} activeId={activeId} canAct={authState.authenticated && !queueState.isProcessing && !isQueueRecovering} busyUserId={manualActionUserId} currentProcessingUsername={queueState.currentUsername} emptyText="עדיין אין משתמשים ב-'לא הוסר'." actionLabel="סמן הוסר" actionBusyLabel="מנסה שוב..." onAction={(id) => void handleManualUnfollow(id)} onSetActive={setActiveId} />
             </section>
 
             <div className="footer-strip"><div className="pagination"><button className="ghost-button" disabled={currentPage === 1} onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}>הקודם</button><span>עמוד {currentPage} מתוך {totalPages}</span><button className="ghost-button" disabled={currentPage >= totalPages} onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}>הבא</button></div><div className="keyboard-shortcuts-hint">קיצורי מקלדת: <kbd>O</kbd> פתיחת פרופיל, <kbd>U</kbd> הסרה, <kbd>N</kbd>/<kbd>P</kbd> מעבר בין שורות.</div></div>

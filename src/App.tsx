@@ -23,7 +23,10 @@ import { exportToCSV } from './utils/csv';
 import { ImportResult, ImportSource, ImportSummary, UserRow } from './types';
 import './index.css';
 
-const DEFAULT_BOT_API_BASE_URL = 'http://127.0.0.1:5000';
+const LOCAL_BOT_API_BASE_URL = 'http://127.0.0.1:5000';
+const importMetaEnv = import.meta as ImportMeta & { env?: Record<string, string | undefined> };
+const CONFIGURED_BOT_API_BASE_URL = importMetaEnv.env?.VITE_BOT_API_BASE_URL?.trim();
+const DEFAULT_BOT_API_BASE_URL = CONFIGURED_BOT_API_BASE_URL || LOCAL_BOT_API_BASE_URL;
 const ACTIVE_QUEUE_POLL_INTERVAL_MS = 550;
 const IDLE_QUEUE_POLL_INTERVAL_MS = 2500;
 const AUTO_RECOVERY_RESTART_DELAY_MS = 300;
@@ -98,6 +101,8 @@ const createRowId = () =>
 const normalizeUsername = (username: string) => username.trim().replace(/^@+/, '').toLowerCase();
 const normalizeBaseUrl = (url: string) => (url.trim() || DEFAULT_BOT_API_BASE_URL).replace(/\/+$/, '');
 const isLoopbackUrl = (url: string) => /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/i.test(url);
+const isPublicWebApp = () =>
+  typeof window !== 'undefined' && !['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
 const isNetworkFetchError = (error: unknown) =>
   error instanceof TypeError && /failed to fetch|networkerror|load failed|fetch/i.test(error.message);
 const renderSummary = (summary: ImportSummary | null) => (summary ? (summary.details ? `${summary.label} | ${summary.details}` : summary.label) : null);
@@ -175,6 +180,8 @@ export default function App() {
   const [queueAutoRun, setQueueAutoRun] = useState(false);
   const [isQueueRecovering, setIsQueueRecovering] = useState(false);
 
+  const isUsingLocalBotUrl = useMemo(() => isLoopbackUrl(normalizeBaseUrl(botBaseUrl)), [botBaseUrl]);
+  const publicAppNeedsPublicBotUrl = isPublicWebApp() && isUsingLocalBotUrl;
   const normalizedBotBaseUrl = useMemo(() => normalizeBaseUrl(botBaseUrl), [botBaseUrl]);
   const deferredSearch = useDeferredValue(search.trim().toLowerCase());
   const pendingUsers = useMemo(() => users.filter((user) => user.status === 'pending'), [users]);
@@ -218,6 +225,11 @@ export default function App() {
   useEffect(() => { workspaceKeyRef.current = currentWorkspaceKey; }, [currentWorkspaceKey]);
   useEffect(() => { queueAutoRunRef.current = queueAutoRun; }, [queueAutoRun]);
   useEffect(() => setBotBaseUrlInput(botBaseUrl), [botBaseUrl]);
+  useEffect(() => {
+    if (CONFIGURED_BOT_API_BASE_URL && normalizeBaseUrl(botBaseUrl) === LOCAL_BOT_API_BASE_URL) {
+      setBotBaseUrl(DEFAULT_BOT_API_BASE_URL);
+    }
+  }, [botBaseUrl, setBotBaseUrl]);
   useEffect(() => setCurrentPage((page) => Math.min(page, totalPages)), [totalPages]);
   useEffect(() => {
     if (!keyboardUsers.some((user) => user.id === activeId)) setActiveId(getActiveId(keyboardUsers));
@@ -235,6 +247,10 @@ export default function App() {
     }
 
     if (isLoopbackUrl(baseUrl)) {
+      if (isPublicWebApp()) {
+        return `האתר פתוח כאתר ציבורי, אבל כתובת הבוט היא ${baseUrl}. הכתובת הזאת מצביעה למחשב של מי שפתח את האתר, לא למחשב שלך. צריך להגדיר כתובת בוט ציבורית עם HTTPS.`;
+      }
+
       return `לא הצלחתי להגיע לשרת הבוט ב־${baseUrl}. צריך להריץ את הבוט במחשב הזה: להיכנס לתיקיית bot ולהפעיל start-bot.bat.`;
     }
 
@@ -795,7 +811,10 @@ export default function App() {
           <button className="ghost-button" onClick={() => void fetchBotState(false, false)} disabled={isSyncing}><RefreshCw size={16} className={isSyncing ? 'spin' : ''} /> בדיקת חיבור</button>
         </div>
       </div>
-      <p className="panel-copy">אם הכתובת היא 127.0.0.1, צריך להריץ את הבוט באותו מחשב שבו פותחים את האתר: תיקיית bot ואז start-bot.bat.</p>
+      {publicAppNeedsPublicBotUrl && (
+        <div className="inline-error">האתר פתוח כאתר ציבורי, אבל כתובת הבוט היא מקומית. חברים צריכים כתובת HTTPS ציבורית לבוט שרץ אצלך, למשל דרך Tunnel.</div>
+      )}
+      <p className="panel-copy">אם הכתובת היא 127.0.0.1, צריך להריץ את הבוט באותו מחשב שבו פותחים את האתר. אם האתר ציבורי והבוט רץ אצלך, צריך להכניס כאן URL ציבורי של הבוט.</p>
     </section>
   );
 
